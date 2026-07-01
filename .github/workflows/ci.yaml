@@ -9,13 +9,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Go
+        uses: actions/setup-go@v5
         with:
-          components: rustfmt, clippy
+          go-version: stable
       - name: Check formatting
-        run: cargo fmt --check
-      - name: Check clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: test -z "$(gofmt -l .)"
+      - name: Check linting
+        run: go vet ./...
       - name: Check tests
-        run: cargo test --all-features
+        run: go test ./...
