@@ -1,0 +1,21 @@
+---
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Check clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Check tests
+        run: cargo test --all-features
