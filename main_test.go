@@ -7,9 +7,9 @@ import (
 )
 
 func TestReadsAndValidatesHeader(t *testing.T) {
-	file, err := os.Open("tests/keys.kdbx")
+	file, err := os.Open("testdata/keys.kdbx")
 	if err != nil {
-		t.Fatalf("open tests/keys.kdbx: %v", err)
+		t.Fatalf("open testdata/keys.kdbx: %v", err)
 	}
 	defer file.Close()
 
