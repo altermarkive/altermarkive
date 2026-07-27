@@ -512,7 +512,7 @@ def transcribe_worker(
         result = pipe(chunk.data)
         text = result['text'].strip()
         if text:
-            prefix = f'[{chunk.origin}] ' if multi_source else ''
+            prefix = ''  # f'[{chunk.origin}] ' if multi_source else ''
             state.add_transcript(f'{prefix}{text}')
 
 
