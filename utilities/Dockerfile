@@ -11,6 +11,7 @@ RUN apt-get -yq update && \
         build-essential \
         cmake \
         curl \
+        docker-compose-v2 \
         ffmpeg \
         git \
         git-lfs \
@@ -23,6 +24,7 @@ RUN apt-get -yq update && \
         ncurses-bin \
         pipewire-bin \
         npm \
+        podman-remote \
         ripgrep \
         software-properties-common \
         sudo \
@@ -32,6 +34,7 @@ RUN apt-get -yq update && \
 # build-essential - N/A
 # cmake - lightgbm (older, non-wheel version)
 # curl - N/A
+# docker-compose-v2 - compose provider for podman-remote
 # ffmpeg - N/A
 # git - N/A
 # git-lfs - N/A
@@ -44,6 +47,7 @@ RUN apt-get -yq update && \
 # ncurses-bin - Claude Code
 # pipewire-bin - Claude Code
 # npm - MCP (provides node, npx)
+# podman-remote - builds/runs containers against the host podman API socket
 # ripgrep - Claude Code
 # software-properties-common - Python
 # unzip - N/A
@@ -60,6 +64,12 @@ RUN /bin/uv venv $VIRTUAL_ENV
 # Install utilities
 ADD scripts/* /usr/local/bin/
 RUN chmod +x /usr/local/bin/*.py
+# Containers launched from inside are siblings on the host, not children.
+# The compose binary ships plugin-only, so expose it on PATH where both the
+# standalone `docker-compose` form and podman's compose provider lookup find it.
+RUN ln -s /usr/bin/podman-remote /usr/local/bin/podman && \
+    ln -s /usr/bin/podman-remote /usr/local/bin/docker && \
+    ln -s /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
 
 ENV USER=user
 ENV HOME=/home/$USER
