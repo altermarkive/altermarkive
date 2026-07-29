@@ -839,7 +839,7 @@ def main(
         help='List available PulseAudio sources and exit.',
     ),
     source: Source = typer.Option(
-        Source.ALL,
+        Source.AUDIO,
         '--source',
         help='Audio source to transcribe: mic, speaker (loopback), screen or all.',
     ),
