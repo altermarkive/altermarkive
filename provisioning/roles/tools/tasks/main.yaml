@@ -1,0 +1,7 @@
+---
+- name: Tools
+  apt:
+    pkg:
+      - fzf
+    state: latest
+    update_cache: yes

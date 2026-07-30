@@ -13,3 +13,4 @@
     - role: sounds
     - role: git
     - role: pdfs
+    - role: tools
