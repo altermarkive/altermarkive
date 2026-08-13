@@ -1,111 +1,102 @@
 package main
 
 import (
-	"encoding/binary"
+	"bufio"
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"time"
 )
 
 const (
-	kdbxHeaderSignature1      uint32 = 0x9AA2D903
-	kdbxHeaderSignature2      uint32 = 0xB54BFB67
-	kdbxHeaderFormatVersion40 uint32 = 0x00040000
-	kdbxHeaderFormatVersion41 uint32 = 0x00040001
+	defaultDatabasePath = "testdata/keys.kdbx"
+	defaultPasswordPath = "testdata/password.txt"
 )
 
-// KDBXHeader is the fixed 12-byte prefix of a KDBX file.
-type KDBXHeader struct {
-	Signature1    uint32
-	Signature2    uint32
-	FormatVersion uint32
-}
-
-// NewKDBXHeader builds a header with the current signatures and format version.
-func NewKDBXHeader() KDBXHeader {
-	return KDBXHeader{
-		Signature1:    kdbxHeaderSignature1,
-		Signature2:    kdbxHeaderSignature2,
-		FormatVersion: kdbxHeaderFormatVersion41,
+func run(args []string) error {
+	databasePath := defaultDatabasePath
+	passwordPath := defaultPasswordPath
+	if len(args) > 0 {
+		databasePath = args[0]
 	}
-}
-
-// Write serializes the header as little-endian to the writer.
-func (h KDBXHeader) Write(w io.Writer) error {
-	for _, value := range []uint32{h.Signature1, h.Signature2, h.FormatVersion} {
-		if err := binary.Write(w, binary.LittleEndian, value); err != nil {
-			return err
-		}
+	if len(args) > 1 {
+		passwordPath = args[1]
 	}
+
+	password, err := readPassword(passwordPath)
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(databasePath)
+	if err != nil {
+		return err
+	}
+
+	payload, err := decryptDatabase(raw, password)
+	if err != nil {
+		return err
+	}
+	entries, err := parseEntries(payload)
+	if err != nil {
+		return err
+	}
+
+	printEntries(os.Stdout, entries, time.Now())
 	return nil
 }
 
-// ReadKDBXHeader deserializes a header from little-endian bytes read from r and
-// validates its signatures and format version against known constants.
-func ReadKDBXHeader(r io.Reader) (KDBXHeader, error) {
-	var header KDBXHeader
-	for _, field := range []*uint32{&header.Signature1, &header.Signature2, &header.FormatVersion} {
-		if err := binary.Read(r, binary.LittleEndian, field); err != nil {
-			return KDBXHeader{}, err
-		}
-	}
-	if header.Signature1 != kdbxHeaderSignature1 {
-		return KDBXHeader{}, fmt.Errorf(
-			"KDBXHeader.Signature1: found %#010x, expected %#010x",
-			header.Signature1, kdbxHeaderSignature1,
-		)
-	}
-	if header.Signature2 != kdbxHeaderSignature2 {
-		return KDBXHeader{}, fmt.Errorf(
-			"KDBXHeader.Signature2: found %#010x, expected %#010x",
-			header.Signature2, kdbxHeaderSignature2,
-		)
-	}
-	switch header.FormatVersion {
-	case kdbxHeaderFormatVersion40, kdbxHeaderFormatVersion41:
-		return header, nil
-	default:
-		return KDBXHeader{}, fmt.Errorf(
-			"KDBXHeader.FormatVersion: found %#010x, expected %#010x or %#010x",
-			header.FormatVersion, kdbxHeaderFormatVersion40, kdbxHeaderFormatVersion41,
-		)
-	}
-}
-
-func run() error {
-	if len(os.Args) < 2 {
-		return fmt.Errorf("expected a path to a KDBX file as the first argument")
-	}
-	originalPath := os.Args[1]
-
-	file, err := os.Open(originalPath)
+// readPassword returns the first line of the password file. The password is a
+// single line; any following lines are ignored.
+func readPassword(path string) (string, error) {
+	file, err := os.Open(path)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer file.Close()
 
-	header, err := ReadKDBXHeader(file)
-	if err != nil {
-		return err
+	scanner := bufio.NewScanner(file)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("password file %s is empty", path)
 	}
-	fmt.Printf("Read original KDBX file from %s header=%+v valid=true\n", originalPath, header)
+	return scanner.Text(), nil
+}
 
-	backupPath := originalPath + ".bak"
-	backup, err := os.Create(backupPath)
-	if err != nil {
-		return err
+func printEntries(w io.Writer, entries []Entry, now time.Time) {
+	for i, entry := range entries {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintf(w, "Title:    %s\n", entry.Title)
+		fmt.Fprintf(w, "UserName: %s\n", entry.UserName)
+		fmt.Fprintf(w, "Password: %s\n", entry.Password)
+		fmt.Fprintf(w, "TOTP:     %s\n", totpDisplay(entry.OTP, now))
+		fmt.Fprintf(w, "Notes:    %s\n", indentNotes(entry.Notes))
 	}
-	defer backup.Close()
+}
 
-	if err := NewKDBXHeader().Write(backup); err != nil {
-		return err
+// totpDisplay renders the current TOTP code, or a hint when the entry has none.
+func totpDisplay(otp string, now time.Time) string {
+	if otp == "" {
+		return "(none)"
 	}
-	fmt.Printf("Wrote backup KDBX file to %s\n", backupPath)
-	return nil
+	code, err := TOTPCode(otp, now)
+	if err != nil {
+		return fmt.Sprintf("(invalid: %v)", err)
+	}
+	return code
+}
+
+// indentNotes keeps multi-line notes aligned under the "Notes:" label.
+func indentNotes(notes string) string {
+	return strings.ReplaceAll(notes, "\n", "\n          ")
 }
 
 func main() {
-	if err := run(); err != nil {
+	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
