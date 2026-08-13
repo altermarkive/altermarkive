@@ -27,3 +27,4 @@ sudo ansible-playbook -i "localhost," --connection=local playbook.yaml
 ## To Do
 
 - How to secure anything - https://github.com/veeral-patel/how-to-secure-anything
+- KeePassXC in air-gapped and encrypted VM
