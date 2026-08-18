@@ -103,7 +103,7 @@ class WhisperPipeline:
 
 ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
 ANTHROPIC_API_KEY_ENV = 'ANTHROPIC_API_KEY'
-DEFAULT_MODEL = 'claude-opus-5'
+DEFAULT_MODEL = 'claude-sonnet-5'
 # Ceiling per response.
 MAX_TOKENS = 4096
 # The solver now spots the question and answers it in one request, so it carries
@@ -355,6 +355,16 @@ def split_question(text: str) -> tuple[str, str]:
     return '', text
 
 
+def response_text(content: str | list) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    texts = [
+        block['text'] for block in content
+        if isinstance(block, dict) and block.get('type') == 'text' and block.get('text')
+    ]
+    return '\n'.join(texts).strip()
+
+
 def solve_llm(state: SessionState, client: ChatAnthropic) -> Answer:
     transcript, screenshot = state.snapshot()
     content = []
@@ -367,7 +377,7 @@ def solve_llm(state: SessionState, client: ChatAnthropic) -> Answer:
         transcript=transcript or '(empty)',
     )})
     response = client.invoke([HumanMessage(content=content)])
-    question, answer = split_question(response.content.strip())
+    question, answer = split_question(response_text(response.content))
     state.update_solution(answer)
     return Answer('LLM', question, answer)
 
@@ -681,7 +691,31 @@ class TestVadAccumulator:
         assert vad.flush() is None
 
 
+class TestResponseText:
+    _ANSWER = 'QUESTION: What is 2 + 2?\n\nTL;DR: Four.'
+
+    def test_plain_string_response(self):
+        assert response_text(f'  {self._ANSWER}  ') == self._ANSWER
+
+    def test_blocks_drop_thinking(self):
+        content = [
+            {'type': 'thinking', 'thinking': 'The user wants arithmetic.'},
+            {'type': 'text', 'text': self._ANSWER},
+        ]
+        assert response_text(content) == self._ANSWER
+
+    def test_blocks_join_multiple_texts(self):
+        content = [
+            {'type': 'text', 'text': 'QUESTION: What is 2 + 2?'},
+            {'type': 'text', 'text': 'TL;DR: Four.'},
+        ]
+        assert response_text(content) == 'QUESTION: What is 2 + 2?\nTL;DR: Four.'
+
+    def test_thinking_only_response_is_empty(self):
+        assert response_text([{'type': 'thinking', 'thinking': 'Still pondering.'}]) == ''
+
+
 # The solver hits the Anthropic API - export ANTHROPIC_API_KEY first.
 # Frequently used: uv run utilities/scripts/souffleur.py
 # RAG alongside the LLM: uv run utilities/scripts/souffleur.py --solve-content something1.md --solve-content something2.md
-# Cheaper solving: uv run utilities/scripts/souffleur.py --solve-model claude-sonnet-5
+# Thorough/slower solving: uv run utilities/scripts/souffleur.py --solve-model claude-opus-5
