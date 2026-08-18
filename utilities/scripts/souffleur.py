@@ -10,7 +10,6 @@
 #     "bm25s",
 #     "sentence-transformers",
 #     "torch",
-#     "torchvision",
 #     "transformers",
 #     "typer",
 # ]
@@ -18,7 +17,6 @@
 # Transcribes live audio from microphone and/or speaker playback (loopback).
 # Captures audio via ffmpeg using PulseAudio sources.
 # Run with --list-devices to find available source names.
-# TODO: These dependencies seemed to have been unused: accelerate, huggingface-hub, librosa, mistral-common
 
 import base64
 import dataclasses
@@ -43,8 +41,6 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 from sentence_transformers import SentenceTransformer
 from transformers import (
-    AutoProcessor,
-    Qwen2_5_VLForConditionalGeneration,
     WhisperForConditionalGeneration,
     WhisperProcessor,
     pipeline,
@@ -69,12 +65,6 @@ class Source(str, enum.Enum):
     AUDIO = 'audio'
     SCREEN = 'screen'
     ALL = 'all'
-
-
-# TODO: Consider adding CDP (or Chrome Dev Tools MCP)
-class OcrMode(str, enum.Enum):
-    GENERIC = 'generic'
-    NANONETS = 'nanonets'
 
 
 class Mode(str, enum.Enum):
@@ -133,31 +123,6 @@ SOLVE_MAX_TOKENS = 8192
 # run 0.3-15 s with conversational speech landing around 3-5 s. 15 lines is the
 # middle of that: roughly a minute of speech, a couple of minutes of slow Q&A.
 RAG_TRANSCRIPT_LINES = 15
-
-
-PROMPT_OCR_NANONETS = 'Extract all text, preserving code structure and formatting.'
-
-
-class NanonetsPipeline:
-    MODEL_ID = 'nanonets/Nanonets-OCR-s'
-
-    def __init__(self, device: str, dtype: torch.dtype) -> None:
-        self.device = device
-        self.processor = AutoProcessor.from_pretrained(self.MODEL_ID)
-        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            self.MODEL_ID, torch_dtype=dtype, low_cpu_mem_usage=True, use_safetensors=True
-        ).to(device)
-
-    def __call__(self, image) -> str:
-        messages = [{'role': 'user', 'content': [
-            {'type': 'image'},
-            {'type': 'text', 'text': PROMPT_OCR_NANONETS},
-        ]}]
-        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = self.processor(text=[text], images=[image], return_tensors='pt').to(self.device)
-        prompt_len = inputs['input_ids'].shape[1]
-        outputs = self.model.generate(**inputs, max_new_tokens=2048)
-        return self.processor.decode(outputs[0][prompt_len:], skip_special_tokens=True)
 
 
 @dataclasses.dataclass
@@ -466,32 +431,20 @@ and take a separate note of any partial solutions."
 def capture_screen_contents(
     state: SessionState,
     exit: threading.Event,
-    client: ChatAnthropic | None,
-    ocr_mode: OcrMode,
+    client: ChatAnthropic,
     interval: float = 0.0,
 ) -> None:
-    nanonets_pipe: NanonetsPipeline | None = None
-    if ocr_mode == OcrMode.NANONETS:
-        device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        print('Loading Nanonets OCR model...')
-        nanonets_pipe = NanonetsPipeline(device, dtype)
-        print('Nanonets OCR model loaded.')
     while not exit.is_set():
         try:
             screenshot = ImageGrab.grab()
-            if nanonets_pipe is not None:
-                text = nanonets_pipe(screenshot)
-            else:
-                buffer = BytesIO()
-                screenshot.save(buffer, format='PNG')
-                png_base64 = base64.b64encode(buffer.getvalue()).decode()
-                response = client.invoke([HumanMessage(content=[
-                    {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{png_base64}'}},
-                    {'type': 'text', 'text': PROMPT_OCR},
-                ])])
-                text = response.content
-            state.update_screen(text)
+            buffer = BytesIO()
+            screenshot.save(buffer, format='PNG')
+            png_base64 = base64.b64encode(buffer.getvalue()).decode()
+            response = client.invoke([HumanMessage(content=[
+                {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{png_base64}'}},
+                {'type': 'text', 'text': PROMPT_OCR},
+            ])])
+            state.update_screen(response.content)
         except Exception as e:
             print(f'Error: {e}')
         time.sleep(interval)
@@ -777,15 +730,10 @@ def main(
         '--max-speech-ms',
         help='Maximum milliseconds of speech before forcing a speech segment boundary.',
     ),
-    ocr_mode: OcrMode = typer.Option(
-        OcrMode.GENERIC,
-        '--ocr-mode',
-        help='Screen OCR mode: generic (Claude vision via the Anthropic API) or nanonets (local Nanonets-OCR-s, best for code/text screens).',
-    ),
     ocr_model: str = typer.Option(
         DEFAULT_MODEL,
         '--ocr-model',
-        help='Anthropic model used for screen OCR when --ocr-mode=generic. Set ANTHROPIC_API_KEY.',
+        help='Anthropic model used for screen OCR. Set ANTHROPIC_API_KEY.',
     ),
     distill_model: str = typer.Option(
         DEFAULT_MODEL,
@@ -895,7 +843,7 @@ def main(
         ocr_client = make_client(ocr_model)
         capture_thread = threading.Thread(
             target=capture_screen_contents,
-            args=(state, exit, ocr_client, ocr_mode),
+            args=(state, exit, ocr_client),
             daemon=True,
         )
         threads.append(capture_thread)
