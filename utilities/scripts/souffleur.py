@@ -25,7 +25,6 @@ import logging
 import os
 import pathlib
 import queue
-import re
 import subprocess
 import threading
 import time
@@ -67,11 +66,6 @@ class Source(str, enum.Enum):
     ALL = 'all'
 
 
-class Mode(str, enum.Enum):
-    ASSIGNMENT = 'assignment'
-    QUESTIONS = 'questions'
-
-
 WHISPER_HUGGINGFACE_ID = 'openai/whisper-large-v3'
 
 
@@ -102,12 +96,11 @@ class WhisperPipeline:
 ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
 ANTHROPIC_API_KEY_ENV = 'ANTHROPIC_API_KEY'
 DEFAULT_MODEL = 'claude-sonnet-5'
-# Ceiling per response. OCR of a dense screen is the largest consumer here.
+# Ceiling per response.
 MAX_TOKENS = 4096
-# The solver is the one role where answer quality beats latency, so it gets
-# adaptive thinking; low effort keeps the extra turnaround affordable on the
-# live path. OCR and distillation stay thinking-off - both are extraction, not
-# reasoning, and every millisecond there delays the solver behind them.
+# The solver now spots the question and answers it in one request, so it carries
+# the whole live path on its own. Adaptive thinking at low effort buys answer
+# quality without the turnaround a higher effort would add.
 SOLVE_EFFORT = 'low'
 # Thinking tokens are drawn from the same budget as the answer, so the solver
 # needs headroom the other roles do not - without it a long deliberation eats
@@ -226,8 +219,7 @@ class Retriever:
 @dataclasses.dataclass
 class SessionState:
     transcript: str = ''
-    screen_contents: str = ''
-    assignment: str = ''
+    screenshot: str = ''
     solution: str = ''
     lock: threading.Lock = dataclasses.field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
@@ -239,21 +231,17 @@ class SessionState:
             with open('transcript.txt', 'w') as handle:
                 handle.write(self.transcript)
 
-    def update_screen(self, contents: str) -> None:
+    def update_screenshot(self, screenshot: str) -> None:
         with self.lock:
-            self.screen_contents = contents
-
-    def update_assignment(self, text: str) -> None:
-        with self.lock:
-            self.assignment = text
+            self.screenshot = screenshot
 
     def update_solution(self, text: str) -> None:
         with self.lock:
             self.solution = text
 
-    def snapshot(self) -> tuple[str, str, str]:
+    def snapshot(self) -> tuple[str, str]:
         with self.lock:
-            return self.transcript, self.screen_contents, self.assignment
+            return self.transcript, self.screenshot
 
 """
 Energy-envelope Voice Activity Detection (VAD).
@@ -424,42 +412,54 @@ def capture_worker(
             process.wait()
 
 
-PROMPT_OCR = """
-Describe what is on this screen. Extract any visible text,"
-summarize diagrams or plots, capture assignments/tasks/questions verbatim,
-and take a separate note of any partial solutions."
-"""
-
-def capture_screen_contents(
+def capture_screen(
     state: SessionState,
     exit: threading.Event,
-    client: ChatAnthropic,
-    interval: float = 0.0,
+    interval: float = 2.0,
 ) -> None:
     while not exit.is_set():
         try:
-            screenshot = ImageGrab.grab()
             buffer = BytesIO()
-            screenshot.save(buffer, format='PNG')
-            png_base64 = base64.b64encode(buffer.getvalue()).decode()
-            response = client.invoke([HumanMessage(content=[
-                {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{png_base64}'}},
-                {'type': 'text', 'text': PROMPT_OCR},
-            ])])
-            state.update_screen(response.content)
+            ImageGrab.grab().save(buffer, format='PNG')
+            state.update_screenshot(base64.b64encode(buffer.getvalue()).decode())
         except Exception as e:
-            print(f'Error: {e}')
+            print(f'Screen capture error: {e}')
         time.sleep(interval)
 
 
 PROMPT_SOLUTION = """
-Solve the following assignment concisely.
+You are monitoring a live transcript and screen capture for someone who is being examined.
+Identify the most recent question or task, then answer it - in one step.
 
-<assignment>
-{assignment}
-</assignment>
+Pay more attention to the END of the transcript: that is where the most recent question
+appears, though details relevant to its solution may be spread across the whole transcript.
 
-Structure your response as:
+The transcript is raw ASR output,
+so a single spoken sentence is often split across consecutive lines; rejoin them before
+deciding whether something is a question.
+
+A screen capture is attached when one is available. Treat it as context for the same
+question: it may hold the task text, given values, or a partial solution.
+
+<transcript>
+{transcript}
+</transcript>
+
+For reference, here is the question you answered last (may be empty):
+
+<previous_question>
+{previous_question}
+</previous_question>
+
+Decide whether the transcript or the screen holds a question or task you have not answered
+yet. Follow-ups such as "what do you mean by X?", "can you explain Y?" or "why?" are NEW
+questions even when topically related to the previous one.
+
+If there is nothing new to answer, respond with exactly: NO_NEW_QUESTION
+
+Otherwise respond in exactly this shape, with no preamble and no XML tags:
+
+QUESTION: <the question on a single line, original wording, no source tags>
 
 TL;DR: <one or two sentences summarising the answer>
 
@@ -468,148 +468,12 @@ prefer bullet points over a block of text>
 """
 
 
-PROMPT_QUESTIONS = """
-You are monitoring a live transcript and screen capture for someone who is being examined.
-Your job is to extract every question that has been posed so far, in the order they appeared.
-
-Each transcript line may be prefixed with a source tag such as [local] or [remote].
-IMPORTANT: these tags are metadata only. Remove every occurrence of [local], [remote],
-or any other bracketed tag from every line before doing anything else. They must never
-appear anywhere in your output.
-
-The transcript is raw ASR output: a single spoken sentence is often split across several
-consecutive lines. Before identifying questions, reconstruct the original spoken sentences
-by joining lines that form a single continuous utterance. Only then decide whether a
-reconstructed sentence is a question.
-
-<transcript>
-{transcript}
-</transcript>
-
-<screen_contents>
-{screen_contents}
-</screen_contents>
-
-Produce a Markdown numbered list. Each item is a single line containing the question
-itself (original wording, split lines rejoined, absolutely no [local]/[remote] tags),
-followed inline by any substantive details that were stated BEFORE or AS PART OF that
-question to establish its context: constraints, given values, definitions, setup
-information. Omit filler words, hesitations, repetitions, and noise (e.g. "uh", "um", incomplete restarts).
-Do not use sub-bullets or nested lists.
-
-Rules:
-  - Only include genuine questions: direct questions, rhetorical questions, and
-    follow-ups like "what do you mean by X?", "can you explain Y?", "why?".
-    Exclude filler, coughs, incomplete fragments, affirmations, and statements
-    that do not ask anything.
-  - A question split across multiple lines is ONE item, not multiple.
-  - Maintain order of appearance. Do not deduplicate or merge distinct questions.
-  - Details for a question come only from content that PRECEDES it in the transcript,
-    not from responses or content that comes after it. Never attach post-question
-    content (answers, elaborations, follow-up exchanges) as details to an earlier question.
-  - Output ONLY the Markdown numbered list. No preamble, no headings,
-    no code fences, no trailing commentary, no source tags.
-  - If no questions are present at all, output exactly: NO_QUESTIONS
-"""
-
-
-PROMPT_ASSIGNMENT = """
-You are monitoring a live transcript and screen capture for someone who is being examined.
-Your job is to identify and summarize the most recent task or assignment.
-
-Below are the latest transcript and screen contents. Pay more attention to
-the END part of the transcript - that is where the most question appears,
-but the details relevant to its solution may be spread across the transcript.
-
-<transcript>
-{transcript}
-</transcript>
-
-<screen_contents>
-{screen_contents}
-</screen_contents>
-
-For reference, here is the previous assignment (may be empty):
-
-<previous_assignment>
-{assignment}
-</previous_assignment>
-
-Step 1 - Classify. Decide which case applies:
-  Case A: A NEW question or task or assignment appears in the transcript or screen that is different
-    from the previous assignment. This includes follow-up questions like
-    "what do you mean by X?", "can you explain Y?", "why?" - these are NEW
-    questions even if topically related.
-  Case B: No new question, but there is new information (constraint, hint, correction)
-    that refines the SAME task in the previous assignment.
-  Case C: Nothing meaningful has changed.
-
-Step 2 - Respond:
-  Case A: Write a NEW assignment from scratch based ONLY on the new question
-    and all the details relevant to its solution.
-    Do NOT include, merge, or reference any details from the previous
-    assignment. Pretend the previous assignment does not exist.
-  Case B: Write an updated version of the previous assignment incorporating
-    the new details.
-  Case C: Respond with exactly: NO_ASSIGNMENT_CHANGE
-
-Your response must contain ONLY the assignment text (cases A/B) or NO_ASSIGNMENT_CHANGE (case C).
-No preamble, no labels, no XML tag.
-"""
-
-
-def strip_xml_tags(text: str) -> str:
-    return re.sub(r'</?[a-zA-Z_][a-zA-Z0-9_]*>', '', text).strip()
-
-
-def extract_last_question(markdown_list: str) -> str | None:
-    last = None
-    for line in markdown_list.splitlines():
-        match = re.match(r'^\s*(?:\d+[.)]|[-*])\s+(.*)', line)
-        if match:
-            last = match.group(1).strip()
-    return last or None
-
-
-def distiller_worker(
-    state: SessionState,
-    exit: threading.Event,
-    client: ChatAnthropic,
-    mode: Mode = Mode.ASSIGNMENT,
-    interval: float = 0.5,
-) -> None:
-    previous_transcript = ''
-    previous_screen_contents = ''
-    while not exit.is_set():
-        transcript, screen_contents, assignment = state.snapshot()
-        if transcript == previous_transcript and screen_contents == previous_screen_contents:
-            time.sleep(interval)
-            continue
-        previous_transcript = transcript
-        previous_screen_contents = screen_contents
-        try:
-            match mode:
-                case Mode.ASSIGNMENT:
-                    response = client.invoke([HumanMessage(content=PROMPT_ASSIGNMENT.format(
-                        assignment=assignment or '(none yet)',
-                        transcript=transcript or '(empty)',
-                        screen_contents=screen_contents or '(empty)',
-                    ))])
-                    text = response.content.strip()
-                    if 'NO_ASSIGNMENT_CHANGE' not in text:
-                        state.update_assignment(strip_xml_tags(text))
-                case Mode.QUESTIONS:
-                    response = client.invoke([HumanMessage(content=PROMPT_QUESTIONS.format(
-                        transcript=transcript or '(empty)',
-                        screen_contents=screen_contents or '(empty)',
-                    ))])
-                    text = response.content.strip()
-                    if 'NO_QUESTIONS' not in text:
-                        last = extract_last_question(text)
-                        if last:
-                            state.update_assignment(last)
-        except Exception as e:
-            print(f'Distiller error: {e}')
+def split_question(text: str) -> tuple[str, str]:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.startswith('QUESTION:'):
+            return line[len('QUESTION:'):].strip(), '\n'.join(lines[index + 1:]).strip()
+    return '', text
 
 
 def solver_worker_llm(
@@ -619,19 +483,33 @@ def solver_worker_llm(
     answers: queue.Queue['Answer | None'],
     interval: float = 0.5,
 ) -> None:
-    """Generates an answer to each new distilled assignment."""
-    previous_assignment = ''
+    previous_transcript = ''
+    previous_screenshot = ''
+    previous_question = ''
     while not exit.is_set():
-        _, _, assignment = state.snapshot()
-        if assignment == previous_assignment or not assignment:
+        transcript, screenshot = state.snapshot()
+        if (transcript, screenshot) == (previous_transcript, previous_screenshot) or not (transcript or screenshot):
             time.sleep(interval)
             continue
-        previous_assignment = assignment
+        previous_transcript = transcript
+        previous_screenshot = screenshot
+        content = []
+        if screenshot:
+            content.append({'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{screenshot}'}})
+        content.append({'type': 'text', 'text': PROMPT_SOLUTION.format(
+            transcript=transcript or '(empty)',
+            previous_question=previous_question or '(none yet)',
+        )})
         try:
-            response = client.invoke([HumanMessage(content=PROMPT_SOLUTION.format(assignment=assignment))])
-            answers.put(Answer('LLM', assignment, response.content.strip()))
-        except Exception as e:
-            print(f'Solver error: {e}')
+            response = client.invoke([HumanMessage(content=content)])
+            text = response.content.strip()
+            if 'NO_NEW_QUESTION' in text:
+                continue
+            question, answer = split_question(text)
+            previous_question = question or previous_question
+            answers.put(Answer('LLM', question, answer))
+        except Exception as exception:
+            print(f'Solver error: {exception}')
 
 
 def solver_worker_rag(
@@ -643,16 +521,9 @@ def solver_worker_rag(
     interval: float = 0.5,
     transcript_lines: int = RAG_TRANSCRIPT_LINES,
 ) -> None:
-    """Retrieves from the corpus on every new speech segment.
-
-    Runs off the raw transcript tail rather than the distilled assignment, so it
-    is independent of the distiller and answers a whole round-trip earlier. Stays
-    silent below `min_score`: the LLM solver covers the same assignment anyway,
-    so there is nothing here to fall back to.
-    """
     previous_transcript = ''
     while not exit.is_set():
-        transcript, _, _ = state.snapshot()
+        transcript, _ = state.snapshot()
         if transcript == previous_transcript or not transcript:
             time.sleep(interval)
             continue
@@ -738,25 +609,10 @@ def main(
         '--max-speech-ms',
         help='Maximum milliseconds of speech before forcing a speech segment boundary.',
     ),
-    ocr_model: str = typer.Option(
-        DEFAULT_MODEL,
-        '--ocr-model',
-        help='Anthropic model used for screen OCR. Set ANTHROPIC_API_KEY.',
-    ),
-    distill_model: str = typer.Option(
-        DEFAULT_MODEL,
-        '--distill-model',
-        help='Anthropic model used for assignment distillation. Set ANTHROPIC_API_KEY.',
-    ),
-    distill_mode: Mode = typer.Option(
-        Mode.QUESTIONS,
-        '--distill-mode',
-        help='Distiller behavior: "assignment" (summarize most recent task) or "questions" (extract ordered list of questions, feed last one to the solver).',
-    ),
     solve_model: str = typer.Option(
         DEFAULT_MODEL,
         '--solve-model',
-        help='Anthropic model used for solving assignments. Set ANTHROPIC_API_KEY.',
+        help='Anthropic model used to spot the current question and answer it. Set ANTHROPIC_API_KEY.',
     ),
     solve_content: list[str] = typer.Option(
         [],
@@ -800,7 +656,6 @@ def main(
     exit = threading.Event()
     state = SessionState()
 
-    distill_client = make_client(distill_model)
     solve_client = make_client(solve_model, effort=SOLVE_EFFORT, max_tokens=SOLVE_MAX_TOKENS)
 
     retriever: Retriever | None = None
@@ -839,19 +694,11 @@ def main(
         )
         threads.append(capture_thread)
     if source in (Source.SCREEN, Source.ALL):
-        ocr_client = make_client(ocr_model)
-        capture_thread = threading.Thread(
-            target=capture_screen_contents,
-            args=(state, exit, ocr_client),
+        threads.append(threading.Thread(
+            target=capture_screen,
+            args=(state, exit),
             daemon=True,
-        )
-        threads.append(capture_thread)
-    distiller_thread = threading.Thread(
-        target=distiller_worker,
-        args=(state, exit, distill_client, distill_mode),
-        daemon=True,
-    )
-    threads.append(distiller_thread)
+        ))
     threads.append(threading.Thread(
         target=solver_worker_llm,
         args=(state, exit, solve_client, answers),
@@ -972,7 +819,7 @@ class TestVadAccumulator:
         assert vad.flush() is None
 
 
-# All LLM roles hit the Anthropic API - export ANTHROPIC_API_KEY first.
+# The solver hits the Anthropic API - export ANTHROPIC_API_KEY first.
 # Frequently used: uv run utilities/scripts/souffleur.py --source audio
-# RAG: uv run utilities/scripts/souffleur.py --source audio --solve-mode rag --solve-content something1.md --solve-content something2.md
-# Cheaper distillation: uv run utilities/scripts/souffleur.py --distill-model claude-haiku-4-5 --source all
+# RAG alongside the solver: uv run utilities/scripts/souffleur.py --source audio --solve-content something1.md --solve-content something2.md
+# Cheaper solving: uv run utilities/scripts/souffleur.py --solve-model claude-haiku-4-5 --source all
