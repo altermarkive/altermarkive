@@ -69,8 +69,8 @@ SCREENSHOT_MEDIA_TYPE = 'image/jpeg'
 
 TRANSCRIPT = pathlib.Path('transcript.txt')
 SCREENSHOT = pathlib.Path('screenshot.jpg')
-CERT = pathlib.Path('serve.crt')
-KEY = pathlib.Path('serve.key')
+CERT = pathlib.Path('souffleur.crt')
+KEY = pathlib.Path('souffleur.key')
 HTML = pathlib.Path(__file__).with_name('souffleur.html')
 
 
@@ -103,7 +103,7 @@ class WhisperPipeline:
 
 ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
 ANTHROPIC_API_KEY_ENV = 'ANTHROPIC_API_KEY'
-DEFAULT_MODEL = 'claude-sonnet-5'
+DEFAULT_MODEL = 'claude-opus-5'
 # Ceiling per response.
 MAX_TOKENS = 4096
 # The solver now spots the question and answers it in one request, so it carries
@@ -571,6 +571,7 @@ def main(
         else:
             print('No valid chunks found in --solve-content files, running the LLM lookup only.')
 
+    # TODO: Move the session state client-side, this will allow to have a queue per session
     audio: queue.Queue[np.ndarray | None] = queue.Queue()
     state = SessionState()
     runtime = Runtime(
@@ -683,4 +684,4 @@ class TestVadAccumulator:
 # The solver hits the Anthropic API - export ANTHROPIC_API_KEY first.
 # Frequently used: uv run utilities/scripts/souffleur.py
 # RAG alongside the LLM: uv run utilities/scripts/souffleur.py --solve-content something1.md --solve-content something2.md
-# Cheaper solving: uv run utilities/scripts/souffleur.py --solve-model claude-haiku-4-5
+# Cheaper solving: uv run utilities/scripts/souffleur.py --solve-model claude-sonnet-5
