@@ -9,7 +9,6 @@
 #     "pytest",
 #     "bm25s",
 #     "sentence-transformers",
-#     "soundfile",
 #     "torch",
 #     "torchvision",
 #     "transformers",
@@ -30,7 +29,6 @@ import pathlib
 import queue
 import re
 import subprocess
-import tempfile
 import threading
 import time
 import warnings
@@ -38,7 +36,6 @@ from io import BytesIO
 
 import bm25s
 import numpy as np
-import soundfile as sf
 import torch
 import typer
 from PIL import ImageGrab
@@ -47,13 +44,7 @@ from langchain_core.messages import HumanMessage
 from sentence_transformers import SentenceTransformer
 from transformers import (
     AutoProcessor,
-    CohereAsrForConditionalGeneration,
-    CohereAsrProcessor,
-    Gemma4ForConditionalGeneration,
-    Gemma4Processor,
     Qwen2_5_VLForConditionalGeneration,
-    VoxtralForConditionalGeneration,
-    VoxtralProcessor,
     WhisperForConditionalGeneration,
     WhisperProcessor,
     pipeline,
@@ -80,13 +71,6 @@ class Source(str, enum.Enum):
     ALL = 'all'
 
 
-class Model(str, enum.Enum):
-    WHISPER = 'whisper'
-    COHERE = 'cohere'
-    VOXTRAL = 'voxtral'
-    GEMMA = 'gemma'
-
-
 # TODO: Consider adding CDP (or Chrome Dev Tools MCP)
 class OcrMode(str, enum.Enum):
     GENERIC = 'generic'
@@ -103,12 +87,7 @@ class SolveMode(str, enum.Enum):
     RAG = 'rag'
 
 
-MODEL_TO_HUGGINGFACE_ID = {
-    Model.WHISPER: 'openai/whisper-large-v3',
-    Model.COHERE: 'CohereLabs/cohere-transcribe-03-2026',  # https://cohere.com/blog/transcribe
-    Model.VOXTRAL: 'mistralai/Voxtral-Mini-3B-2507',
-    Model.GEMMA: 'google/gemma-4-E4B-it',
-}
+WHISPER_HUGGINGFACE_ID = 'openai/whisper-large-v3'
 
 
 class WhisperPipeline:
@@ -133,81 +112,6 @@ class WhisperPipeline:
 
     def __call__(self, audio: np.ndarray) -> dict:
         return self._pipe(audio)
-
-
-class CoherePipeline:
-    def __init__(self, model_id: str, device: str, dtype: torch.dtype) -> None:
-        asr_model = CohereAsrForConditionalGeneration.from_pretrained(
-            model_id, torch_dtype=dtype, low_cpu_mem_usage=True, use_safetensors=True
-        ).to(device)
-        processor = CohereAsrProcessor.from_pretrained(model_id)
-        self._pipe = pipeline(
-            'automatic-speech-recognition',
-            model=asr_model,
-            tokenizer=processor.tokenizer,
-            feature_extractor=processor.feature_extractor,
-            dtype=dtype,
-            device=device,
-            batch_size=1,
-        )
-
-    def __call__(self, audio: np.ndarray) -> dict:
-        return self._pipe(audio)
-
-
-class VoxtralPipeline:
-    def __init__(self, model_id: str, device: str, dtype: torch.dtype) -> None:
-        self.device = device
-        self.processor = VoxtralProcessor.from_pretrained(model_id)
-        self.model = VoxtralForConditionalGeneration.from_pretrained(
-            model_id, torch_dtype=dtype, low_cpu_mem_usage=True, use_safetensors=True
-        ).to(device)
-
-    def __call__(self, audio: np.ndarray) -> dict:
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
-            tmp_path = f.name
-        try:
-            sf.write(tmp_path, audio, SAMPLE_RATE)
-            messages = [{'role': 'user', 'content': [
-                {'type': 'audio', 'url': tmp_path},
-                {'type': 'text', 'text': 'Transcribe the audio.'},
-            ]}]
-            inputs = self.processor.apply_chat_template(
-                messages, chat_template='', tokenize=True, return_dict=True,
-                return_tensors='pt', add_generation_prompt=True,
-            ).to(self.device)
-        finally:
-            os.unlink(tmp_path)
-        prompt_len = inputs['input_ids'].shape[1]
-        outputs = self.model.generate(**inputs, max_new_tokens=500)
-        text = self.processor.decode(outputs[0][prompt_len:], skip_special_tokens=True)
-        return {'text': text}
-
-
-class GemmaPipeline:
-    def __init__(self, model_id: str, device: str, dtype: torch.dtype) -> None:
-        self.device = device
-        self.processor = Gemma4Processor.from_pretrained(model_id)
-        self.model = Gemma4ForConditionalGeneration.from_pretrained(
-            model_id, torch_dtype=dtype, low_cpu_mem_usage=True,
-        ).to(device)
-
-    def __call__(self, audio: np.ndarray) -> str:
-        with tempfile.NamedTemporaryFile(suffix='.wav') as f:
-            tmp_path = f.name
-            sf.write(tmp_path, audio, SAMPLE_RATE)
-            messages = [{'role': 'user', 'content': [
-                {'type': 'audio', 'url': tmp_path},
-                {'type': 'text', 'text': 'Transcribe the audio.'},
-            ]}]
-            inputs = self.processor.apply_chat_template(
-                messages, tokenize=True, return_dict=True,
-                return_tensors='pt', add_generation_prompt=True,
-            ).to(self.device)
-            prompt_len = inputs['input_ids'].shape[1]
-            outputs = self.model.generate(**inputs, max_new_tokens=500, do_sample=False)
-            text = self.processor.decode(outputs[0][prompt_len:], skip_special_tokens=True)
-            return {'text': text}
 
 
 ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
@@ -863,11 +767,6 @@ def main(
         '--max-speech-ms',
         help='Maximum milliseconds of speech before forcing a speech segment boundary.',
     ),
-    transcribe_model: Model = typer.Option(
-        Model.WHISPER,
-        '--transcribe-model',
-        help='Model used for transcription. Set HF_TOKEN if necessary.',
-    ),
     ocr_mode: OcrMode = typer.Option(
         OcrMode.GENERIC,
         '--ocr-mode',
@@ -926,17 +825,7 @@ def main(
     print('Loading model...')
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-    model_type = transcribe_model
-    model_id = MODEL_TO_HUGGINGFACE_ID[model_type]
-    match model_type:
-        case Model.WHISPER:
-            pipe = WhisperPipeline(model_id, device, dtype)
-        case Model.COHERE:
-            pipe = CoherePipeline(model_id, device, dtype)
-        case Model.VOXTRAL:
-            pipe = VoxtralPipeline(model_id, device, dtype)
-        case Model.GEMMA:
-            pipe = GemmaPipeline(model_id, device, dtype)
+    pipe = WhisperPipeline(WHISPER_HUGGINGFACE_ID, device, dtype)
     print('Model loaded. Listening... (Ctrl+C to exit)')
 
     audio: queue.Queue[AudioChunk | None] = queue.Queue()
