@@ -12,13 +12,16 @@
 * {
   font-family: "JetBrains Mono Variable", ui-monospace, monospace;
 }
+#preview {
+  width: 10vmin;
+}
 </style>
 </head>
 <body>
-<button id="record">Start</button>
+<video id="preview" playsinline muted></video>
 <select id="cameras"></select>
 <button id="capture">Capture</button>
-<video id="preview" playsinline muted></video>
+<button id="record">Start</button>
 <div id="status">Idle</div>
 <script>
 
