@@ -15,6 +15,10 @@
 #preview {
   width: 10vmin;
 }
+#rag, #llm {
+  white-space: pre-wrap;
+  font-size: 8pt;
+}
 </style>
 </head>
 <body>
@@ -24,7 +28,8 @@
 <button id="solve">Solve</button>
 <button id="record">Start</button>
 <div id="status">Idle</div>
-<div id="solution"></div>
+<pre id="rag"></pre>
+<pre id="llm"></pre>
 <script>
 
 const AUDIO_SAMPLING_RATE = 16000;
@@ -35,7 +40,8 @@ const cameraSelect = document.getElementById("cameras");
 const captureButton = document.getElementById("capture");
 const previewVideo = document.getElementById("preview");
 const solveButton = document.getElementById("solve");
-const solutionField = document.getElementById("solution");
+const ragField = document.getElementById("rag");
+const llmField = document.getElementById("llm");
 
 let audioContext = null;
 let audioStream = null;
@@ -135,32 +141,29 @@ async function capture(upload) {
     : `Upload failed with status ${response.status}`;
 }
 
-async function solve() {
-  const response = await fetch("/solve", { method: "POST" });
+async function solve(path, field) {
+  field.textContent = "Solving...";
+  const response = await fetch(path, { method: "POST" });
   if (!response.ok) throw new Error(`status ${response.status}`);
-  const { answers } = await response.json();
-  solutionField.replaceChildren(...answers.flatMap(({ label, query, text }) => {
-    const heading = document.createElement("h3");
-    heading.textContent = query ? `[${label}] ${query}` : `[${label}]`;
-    const body = document.createElement("div");
-    body.textContent = text;
-    return [heading, body];
-  }));
-  if (!answers.length) solutionField.textContent = "No answer.";
+  const { answer } = await response.json();
+  if (!answer) {
+    field.textContent = "No answer.";
+    return;
+  }
+  const header = answer.query ? `[${answer.label}] ${answer.query}` : `[${answer.label}]`;
+  field.textContent = `${header}\n\n${answer.text}`;
 }
 
 cameraSelect.onchange = () => startCamera();
 
 solveButton.onclick = async () => {
   solveButton.disabled = true;
-  statusField.textContent = "Solving...";
-  try {
-    await solve();
-  } catch (error) {
-    statusField.textContent = `Solve failed due to ${error.message}`;
-  } finally {
-    solveButton.disabled = false;
-  }
+  await Promise.allSettled([["/solve/rag", ragField], ["/solve/llm", llmField]].map(
+    ([path, field]) => solve(path, field).catch((error) => {
+      field.textContent = `Failed due to ${error.message}`;
+    }),
+  ));
+  solveButton.disabled = false;
 };
 
 captureButton.onclick = async () => {

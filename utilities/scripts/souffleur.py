@@ -19,8 +19,9 @@
 # ///
 # Serves souffleur.html over HTTPS and solves the assignment the page's audio and
 # camera capture. Audio arrives as Float32 blocks over a WebSocket, is segmented by
-# VAD and transcribed; a still posted to /screenshot is the visual context; tapping
-# Solve runs the RAG and LLM lookups and returns their answers to the page.
+# VAD and transcribed; a still posted to /screenshot is the visual context; the page's
+# Solve button hits /solve/rag and /solve/llm separately, so the fast retrieval answer
+# is not held up by the LLM round trip.
 
 import asyncio
 import base64
@@ -439,27 +440,25 @@ async def screenshot(request: Request) -> dict[str, int]:
     return {'bytes': len(image)}
 
 
-@app.post('/solve')
-async def solve() -> dict[str, list[dict[str, str]]]:
-    answers: list[Answer] = []
-    if runtime.retriever is not None:
-        try:
-            answer = await asyncio.to_thread(
-                solve_rag,
-                runtime.state,
-                runtime.retriever,
-                runtime.rag_min_score,
-                runtime.rag_transcript_lines,
-            )
-            if answer is not None:
-                answers.append(answer)
-        except Exception as exception:
-            answers.append(Answer('RAG error', '', str(exception)))
-    try:
-        answers.append(await asyncio.to_thread(solve_llm, runtime.state, runtime.client))
-    except Exception as exception:
-        answers.append(Answer('LLM error', '', str(exception)))
-    return {'answers': [dataclasses.asdict(answer) for answer in answers]}
+@app.post('/solve/rag')
+async def rag() -> dict[str, dict[str, str] | None]:
+    if runtime.retriever is None:
+        return {'answer': None}
+    answer = await asyncio.to_thread(
+        solve_rag,
+        runtime.state,
+        runtime.retriever,
+        runtime.rag_min_score,
+        runtime.rag_transcript_lines,
+    )
+    return {'answer': dataclasses.asdict(answer) if answer is not None else None}
+
+
+@app.post('/solve/llm')
+async def llm() -> dict[str, dict[str, str]]:
+    """The slow half: blocking, so it runs on a worker thread."""
+    answer = await asyncio.to_thread(solve_llm, runtime.state, runtime.client)
+    return {'answer': dataclasses.asdict(answer)}
 
 
 def ensure_cert() -> None:
