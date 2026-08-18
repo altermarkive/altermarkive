@@ -3,37 +3,48 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
+#     "bm25s",
+#     "cryptography",
+#     "fastapi",
 #     "langchain-anthropic",
 #     "numpy",
-#     "pillow",
 #     "pytest",
-#     "bm25s",
 #     "sentence-transformers",
 #     "torch",
 #     "transformers",
 #     "typer",
+#     "uvicorn",
+#     "websockets",
 # ]
 # ///
-# Transcribes live audio and alongside a screenshot uses an LLM to solve an assignment they contain.
+# Serves souffleur.html over HTTPS and solves the assignment the page's audio and
+# camera capture. Audio arrives as Float32 blocks over a WebSocket, is segmented by
+# VAD and transcribed; a still posted to /screenshot is the visual context; tapping
+# Solve runs the RAG and LLM lookups and returns their answers to the page.
 
+import asyncio
 import base64
 import dataclasses
-import enum
+import datetime
 import logging
 import os
 import pathlib
 import queue
-import subprocess
+import socket
 import threading
-import time
 import warnings
-from io import BytesIO
 
 import bm25s
 import numpy as np
 import torch
 import typer
-from PIL import ImageGrab
+import uvicorn
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 from sentence_transformers import SentenceTransformer
@@ -53,15 +64,13 @@ logging.getLogger('huggingface_hub').setLevel(logging.ERROR)
 
 
 SAMPLE_RATE = 16000
-BYTES_PER_SAMPLE = 2  # int16 / s16le
+SCREENSHOT_MEDIA_TYPE = 'image/jpeg'
 
-
-class Source(str, enum.Enum):
-    MICROPHONE = 'microphone'
-    SPEAKER = 'speaker'
-    AUDIO = 'audio'
-    SCREEN = 'screen'
-    ALL = 'all'
+TRANSCRIPT = pathlib.Path('transcript.txt')
+SCREENSHOT = pathlib.Path('screenshot.jpg')
+CERT = pathlib.Path('serve.crt')
+KEY = pathlib.Path('serve.key')
+HTML = pathlib.Path(__file__).with_name('souffleur.html')
 
 
 WHISPER_HUGGINGFACE_ID = 'openai/whisper-large-v3'
@@ -109,19 +118,6 @@ SOLVE_MAX_TOKENS = 8192
 # run 0.3-15 s with conversational speech landing around 3-5 s. 15 lines is the
 # middle of that: roughly a minute of speech, a couple of minutes of slow Q&A.
 RAG_TRANSCRIPT_LINES = 15
-
-
-@dataclasses.dataclass
-class Device:
-    default: bool
-    device: str
-    name: str
-
-
-@dataclasses.dataclass
-class AudioChunk:
-    origin: str
-    data: np.ndarray
 
 
 @dataclasses.dataclass
@@ -226,7 +222,7 @@ class SessionState:
     def add_transcript(self, text: str) -> None:
         with self.lock:
             self.transcript += text + '\n'
-            with open('transcript.txt', 'w') as handle:
+            with open(TRANSCRIPT, 'w') as handle:
                 handle.write(self.transcript)
 
     def update_screenshot(self, screenshot: str) -> None:
@@ -240,6 +236,7 @@ class SessionState:
     def snapshot(self) -> tuple[str, str]:
         with self.lock:
             return self.transcript, self.screenshot
+
 
 """
 Energy-envelope Voice Activity Detection (VAD).
@@ -306,123 +303,18 @@ class VadAccumulator:
         return segment
 
 
-def pulse_devices(flag: str) -> list[Device]:
-    result = subprocess.run(
-        ['ffmpeg', flag, 'pulse'],
-        capture_output=True,
-        text=True,
-    )
-    devices = []
-    listing = False
-    for line in result.stdout.splitlines():
-        if line.startswith('Auto-detected'):
-            listing = True
-            continue
-        if listing:
-            default = line.startswith('*')
-            line = line[2:]
-            device = line[:line.index(' ')]
-            name = line[line.index('[') + 1 : line.index(']')]
-            devices.append(Device(default, device, name))
-    return devices
-
-
-def pulse_sources() -> list[Device]:
-    return pulse_devices('-sources')
-
-
-def pulse_sinks() -> list[Device]:
-    return pulse_devices('-sinks')
-
-
-def default_microphone_device(sources: list[Device], override: int | None) -> str:
-    try:
-        if override:
-            return sources[override].device
-        return [source.device for source in sources if source.default][0]
-    except:
-        raise RuntimeError(
-            'No microphone source found. Specify one with --microphone-device.\n'
-            'Run with --list-devices to see available sources.'
-        )
-
-
-def default_speaker_device(sources: list[Device], override: int | None) -> str:
-    try:
-        if override:
-            return sources[override].device
-        default = [sink for sink in pulse_sinks() if sink.default][0].device + '.monitor'
-        return [s.device for s in sources if s.device == default][0]
-    except:
-        raise RuntimeError(
-            'No monitor source found. Specify one with --speaker-device.\n'
-            'Run with --list-devices to see available sources.'
-        )
-
-
 def transcribe_worker(
     pipe: pipeline,
-    multi_source: bool,
-    audio: queue.Queue[AudioChunk | None],
-    exit: threading.Event,
+    audio: queue.Queue[np.ndarray | None],
     state: SessionState,
 ) -> None:
-    while not exit.is_set():
-        chunk = audio.get()
-        if chunk is None:
+    while True:
+        segment = audio.get()
+        if segment is None:
             break
-        result = pipe(chunk.data)
-        text = result['text'].strip()
+        text = pipe(segment)['text'].strip()
         if text:
-            prefix = ''  # f'[{chunk.origin}] ' if multi_source else ''
-            state.add_transcript(f'{prefix}{text}')
-
-
-def capture_worker(
-    device: str,
-    origin: str,
-    audio: queue.Queue[AudioChunk | None],
-    exit: threading.Event,
-    vad: VadAccumulator,
-) -> None:
-    cmd = [
-        'ffmpeg', '-loglevel', 'quiet',
-        '-f', 'pulse', '-i', device,
-        '-f', 's16le', '-ar', str(SAMPLE_RATE), '-ac', '1',
-        'pipe:1',
-    ]
-    frame_bytes = vad.frame_samples * BYTES_PER_SAMPLE
-    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
-        try:
-            while not exit.is_set():
-                raw = process.stdout.read(frame_bytes)
-                if not raw:
-                    break
-                frame = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-                segment = vad.feed(frame)
-                if segment is not None:
-                    audio.put(AudioChunk(origin, segment))
-            remainder = vad.flush()
-            if remainder is not None:
-                audio.put(Chunk(origin, remainder))
-        finally:
-            process.terminate()
-            process.wait()
-
-
-def capture_screen(
-    state: SessionState,
-    exit: threading.Event,
-    interval: float = 2.0,
-) -> None:
-    while not exit.is_set():
-        try:
-            buffer = BytesIO()
-            ImageGrab.grab().save(buffer, format='PNG')
-            state.update_screenshot(base64.b64encode(buffer.getvalue()).decode())
-        except Exception as e:
-            print(f'Screen capture error: {e}')
-        time.sleep(interval)
+            state.add_transcript(text)
 
 
 PROMPT_SOLUTION = """
@@ -443,19 +335,7 @@ question: it may hold the task text, given values, or a partial solution.
 {transcript}
 </transcript>
 
-For reference, here is the question you answered last (may be empty):
-
-<previous_question>
-{previous_question}
-</previous_question>
-
-Decide whether the transcript or the screen holds a question or task you have not answered
-yet. Follow-ups such as "what do you mean by X?", "can you explain Y?" or "why?" are NEW
-questions even when topically related to the previous one.
-
-If there is nothing new to answer, respond with exactly: NO_NEW_QUESTION
-
-Otherwise respond in exactly this shape, with no preamble and no XML tags:
+Respond in exactly this shape, with no preamble and no XML tags:
 
 QUESTION: <the question on a single line, original wording, no source tags>
 
@@ -474,85 +354,139 @@ def split_question(text: str) -> tuple[str, str]:
     return '', text
 
 
-def solver_worker_llm(
-    state: SessionState,
-    exit: threading.Event,
-    client: ChatAnthropic,
-    answers: queue.Queue['Answer | None'],
-    interval: float = 0.5,
-) -> None:
-    previous_transcript = ''
-    previous_screenshot = ''
-    previous_question = ''
-    while not exit.is_set():
-        transcript, screenshot = state.snapshot()
-        if (transcript, screenshot) == (previous_transcript, previous_screenshot) or not (transcript or screenshot):
-            time.sleep(interval)
-            continue
-        previous_transcript = transcript
-        previous_screenshot = screenshot
-        content = []
-        if screenshot:
-            content.append({'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{screenshot}'}})
-        content.append({'type': 'text', 'text': PROMPT_SOLUTION.format(
-            transcript=transcript or '(empty)',
-            previous_question=previous_question or '(none yet)',
-        )})
-        try:
-            response = client.invoke([HumanMessage(content=content)])
-            text = response.content.strip()
-            if 'NO_NEW_QUESTION' in text:
-                continue
-            question, answer = split_question(text)
-            previous_question = question or previous_question
-            answers.put(Answer('LLM', question, answer))
-        except Exception as exception:
-            print(f'Solver error: {exception}')
+def solve_llm(state: SessionState, client: ChatAnthropic) -> Answer:
+    transcript, screenshot = state.snapshot()
+    content = []
+    if screenshot:
+        content.append({
+            'type': 'image_url',
+            'image_url': {'url': f'data:{SCREENSHOT_MEDIA_TYPE};base64,{screenshot}'},
+        })
+    content.append({'type': 'text', 'text': PROMPT_SOLUTION.format(
+        transcript=transcript or '(empty)',
+    )})
+    response = client.invoke([HumanMessage(content=content)])
+    question, answer = split_question(response.content.strip())
+    state.update_solution(answer)
+    return Answer('LLM', question, answer)
 
 
-def solver_worker_rag(
+def solve_rag(
     state: SessionState,
-    exit: threading.Event,
     retriever: Retriever,
     min_score: float,
-    answers: queue.Queue['Answer | None'],
-    interval: float = 0.5,
-    transcript_lines: int = RAG_TRANSCRIPT_LINES,
-) -> None:
-    previous_transcript = ''
-    while not exit.is_set():
-        transcript, _ = state.snapshot()
-        if transcript == previous_transcript or not transcript:
-            time.sleep(interval)
-            continue
-        previous_transcript = transcript
-        query = '\n'.join(transcript.splitlines()[-transcript_lines:])
+    transcript_lines: int,
+) -> Answer | None:
+    transcript, _ = state.snapshot()
+    if not transcript:
+        return None
+    query = '\n'.join(transcript.splitlines()[-transcript_lines:])
+    chunk, confident, top_score = retriever.top1_with_confidence_without_margin(query, min_score)
+    if not confident:
+        return None
+    return Answer(f'RAG score {top_score:.3f}', '', chunk.content)
+
+
+@dataclasses.dataclass
+class Runtime:
+    state: SessionState
+    audio: queue.Queue[np.ndarray | None]
+    client: ChatAnthropic
+    retriever: Retriever | None
+    min_silence_ms: int
+    max_speech_ms: int
+    rag_min_score: float
+    rag_transcript_lines: int
+
+
+runtime: Runtime = None  # type: ignore[assignment]
+
+app = FastAPI()
+
+
+@app.get('/')
+def root() -> FileResponse:
+    return FileResponse(HTML)
+
+
+@app.websocket('/audio')
+async def audio_socket(websocket: WebSocket) -> None:
+    await websocket.accept()
+    vad = VadAccumulator(
+        min_silence_ms=runtime.min_silence_ms, max_speech_ms=runtime.max_speech_ms
+    )
+    residue = np.empty(0, dtype=np.float32)
+    try:
+        while True:
+            block = np.frombuffer(await websocket.receive_bytes(), dtype=np.float32)
+            residue = np.concatenate([residue, block])
+            while len(residue) >= vad.frame_samples:
+                frame, residue = residue[:vad.frame_samples], residue[vad.frame_samples:]
+                segment = vad.feed(frame)
+                if segment is not None:
+                    runtime.audio.put(segment)
+    except WebSocketDisconnect:
+        segment = vad.flush()
+        if segment is not None:
+            runtime.audio.put(segment)
+
+
+@app.post('/screenshot')
+async def screenshot(request: Request) -> dict[str, int]:
+    image = await request.body()
+    SCREENSHOT.write_bytes(image)
+    runtime.state.update_screenshot(base64.b64encode(image).decode())
+    return {'bytes': len(image)}
+
+
+@app.post('/solve')
+async def solve() -> dict[str, list[dict[str, str]]]:
+    answers: list[Answer] = []
+    if runtime.retriever is not None:
         try:
-            chunk, confident, top_score = retriever.top1_with_confidence_without_margin(query, min_score)
-            if confident:
-                # No header: the retrieval key adds nothing next to the chunk itself.
-                answers.put(Answer(f'RAG score {top_score:.3f}', '', chunk.content))
-        except Exception as e:
-            print(f'RAG solver error: {e}')
+            answer = await asyncio.to_thread(
+                solve_rag,
+                runtime.state,
+                runtime.retriever,
+                runtime.rag_min_score,
+                runtime.rag_transcript_lines,
+            )
+            if answer is not None:
+                answers.append(answer)
+        except Exception as exception:
+            answers.append(Answer('RAG error', '', str(exception)))
+    try:
+        answers.append(await asyncio.to_thread(solve_llm, runtime.state, runtime.client))
+    except Exception as exception:
+        answers.append(Answer('LLM error', '', str(exception)))
+    return {'answers': [dataclasses.asdict(answer) for answer in answers]}
 
 
-def printer_worker(
-    state: SessionState,
-    exit: threading.Event,
-    answers: queue.Queue['Answer | None'],
-) -> None:
-    """Sole writer to stdout for solver output, so two solvers cannot interleave."""
-    while not exit.is_set():
-        answer = answers.get()
-        if answer is None:
-            break
-        state.update_solution(answer.text)
-        print('\n===\n')
-        if answer.query:
-            print(answer.query)
-        print(f'\n--- [{answer.label}] ---\n')
-        print(answer.text)
-        print('\n---\n')
+def ensure_cert() -> None:
+    if CERT.exists() and KEY.exists():
+        return
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, socket.gethostname())])
+    now = datetime.datetime.now(datetime.UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=365))
+        .sign(key, hashes.SHA256())
+    )
+    CERT.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    KEY.write_bytes(
+        key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    KEY.chmod(0o600)
 
 
 def make_client(model: str, effort: str | None = None, max_tokens: int = MAX_TOKENS) -> ChatAnthropic:
@@ -577,25 +511,10 @@ def make_client(model: str, effort: str | None = None, max_tokens: int = MAX_TOK
 
 
 def main(
-    list_devices: bool = typer.Option(
-        False,
-        '--list-devices',
-        help='List available PulseAudio sources and exit.',
-    ),
-    source: Source = typer.Option(
-        Source.AUDIO,
-        '--source',
-        help='Audio source to transcribe: mic, speaker (loopback), screen or all.',
-    ),
-    microphone_device: int | None = typer.Option(
-        None,
-        '--microphone-device',
-        help='PulseAudio source index for microphone. Auto-detected if not provided.',
-    ),
-    speaker_device: int | None = typer.Option(
-        None,
-        '--speaker-device',
-        help='PulseAudio source index for speaker (loopback). Auto-detected if not provided.',
+    port: int = typer.Option(
+        8443,
+        '--port',
+        help='HTTPS port the page and its endpoints are served on.',
     ),
     min_silence_ms: int = typer.Option(
         600,
@@ -615,7 +534,7 @@ def main(
     solve_content: list[str] = typer.Option(
         [],
         '--solve-content',
-        help='Paths to text files used as the RAG corpus. The RAG solver runs alongside the LLM solver whenever these are given, and is skipped otherwise. Each file is chunked on "---" lines; each chunk needs a "## Title" line as its retrieval key.',
+        help='Paths to text files used as the RAG corpus. The RAG lookup runs alongside the LLM lookup whenever these are given, and is skipped otherwise. Each file is chunked on "---" lines; each chunk needs a "## Title" line as its retrieval key.',
     ),
     embed_model: str = typer.Option(
         'Qwen/Qwen3-Embedding-0.6B',
@@ -625,7 +544,7 @@ def main(
     rag_min_score: float = typer.Option(
         0.5,
         '--rag-min-score',
-        help='Minimum dense cosine similarity for the RAG top match to be considered confident. Below this threshold, falls back to LLM if available.',
+        help='Minimum dense cosine similarity for the RAG top match to be considered confident. Below this threshold, only the LLM answer is returned.',
     ),
     rag_transcript_lines: int = typer.Option(
         RAG_TRANSCRIPT_LINES,
@@ -633,12 +552,8 @@ def main(
         help='Number of trailing transcript lines (VAD segments) used as the RAG query. One line is one speech segment, so the default of 15 covers roughly a minute of speech.',
     ),
 ) -> None:
-    sources = pulse_sources()
-    if list_devices:
-        print('\n'.join([f'{i}. {source.name}' for i, source in enumerate(sources)]))
-        return
+    global runtime
 
-    # Fail before the multi-second ASR model load rather than after it.
     if not os.environ.get(ANTHROPIC_API_KEY_ENV):
         raise RuntimeError(f'{ANTHROPIC_API_KEY_ENV} is not set.')
 
@@ -646,15 +561,6 @@ def main(
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     dtype = torch.float16 if torch.cuda.is_available() else torch.float32
     pipe = WhisperPipeline(WHISPER_HUGGINGFACE_ID, device, dtype)
-    print('Model loaded. Listening... (Ctrl+C to exit)')
-
-    audio: queue.Queue[AudioChunk | None] = queue.Queue()
-    answers: queue.Queue[Answer | None] = queue.Queue()
-    multi_source = source == Source.ALL or source == Source.AUDIO
-    exit = threading.Event()
-    state = SessionState()
-
-    solve_client = make_client(solve_model, effort=SOLVE_EFFORT, max_tokens=SOLVE_MAX_TOKENS)
 
     retriever: Retriever | None = None
     if solve_content:
@@ -664,70 +570,28 @@ def main(
             retriever = Retriever(chunks, embed_model)
             print(f'Indexed {len(chunks)} chunks.')
         else:
-            print('No valid chunks found in --solve-content files, running the LLM solver only.')
+            print('No valid chunks found in --solve-content files, running the LLM lookup only.')
 
-    threads: list[threading.Thread] = []
-    transcriber_thread = threading.Thread(
-        target=transcribe_worker,
-        args=(pipe, multi_source, audio, exit, state),
-        daemon=True,
+    audio: queue.Queue[np.ndarray | None] = queue.Queue()
+    state = SessionState()
+    runtime = Runtime(
+        state=state,
+        audio=audio,
+        client=make_client(solve_model, effort=SOLVE_EFFORT, max_tokens=SOLVE_MAX_TOKENS),
+        retriever=retriever,
+        min_silence_ms=min_silence_ms,
+        max_speech_ms=max_speech_ms,
+        rag_min_score=rag_min_score,
+        rag_transcript_lines=rag_transcript_lines,
     )
-    threads.append(transcriber_thread)
-    if source in [Source.MICROPHONE, Source.AUDIO, Source.ALL]:
-        device = default_microphone_device(sources, microphone_device)
-        vad = VadAccumulator(min_silence_ms=min_silence_ms, max_speech_ms=max_speech_ms)
-        capture_thread = threading.Thread(
-            target=capture_worker,
-            args=(device, 'local', audio, exit, vad),
-            daemon=True,
-        )
-        threads.append(capture_thread)
-    if source in [Source.SPEAKER, Source.AUDIO, Source.ALL]:
-        device = default_speaker_device(sources, speaker_device)
-        vad = VadAccumulator(min_silence_ms=min_silence_ms, max_speech_ms=max_speech_ms)
-        capture_thread = threading.Thread(
-            target=capture_worker,
-            args=(device, 'remote', audio, exit, vad),
-            daemon=True,
-        )
-        threads.append(capture_thread)
-    if source in (Source.SCREEN, Source.ALL):
-        threads.append(threading.Thread(
-            target=capture_screen,
-            args=(state, exit),
-            daemon=True,
-        ))
-    threads.append(threading.Thread(
-        target=solver_worker_llm,
-        args=(state, exit, solve_client, answers),
-        daemon=True,
-    ))
-    if retriever is not None:
-        threads.append(threading.Thread(
-            target=solver_worker_rag,
-            args=(state, exit, retriever, rag_min_score, answers),
-            kwargs={'transcript_lines': rag_transcript_lines},
-            daemon=True,
-        ))
-    threads.append(threading.Thread(
-        target=printer_worker,
-        args=(state, exit, answers),
-        daemon=True,
-    ))
-    for thread in threads:
-        thread.start()
 
+    threading.Thread(target=transcribe_worker, args=(pipe, audio, state), daemon=True).start()
+
+    ensure_cert()
     try:
-        for thread in threads:
-            thread.join()
-    except KeyboardInterrupt:
-        print('\nStopping...')
-        exit.set()
-        for thread in threads:
-            thread.join(timeout=1)
+        uvicorn.run(app, host='0.0.0.0', port=port, ssl_certfile=str(CERT), ssl_keyfile=str(KEY))
     finally:
         audio.put(None)
-        answers.put(None)
 
 
 if __name__ == '__main__':
@@ -818,6 +682,6 @@ class TestVadAccumulator:
 
 
 # The solver hits the Anthropic API - export ANTHROPIC_API_KEY first.
-# Frequently used: uv run utilities/scripts/souffleur.py --source audio
-# RAG alongside the solver: uv run utilities/scripts/souffleur.py --source audio --solve-content something1.md --solve-content something2.md
-# Cheaper solving: uv run utilities/scripts/souffleur.py --solve-model claude-haiku-4-5 --source all
+# Frequently used: uv run utilities/scripts/souffleur.py
+# RAG alongside the LLM: uv run utilities/scripts/souffleur.py --solve-content something1.md --solve-content something2.md
+# Cheaper solving: uv run utilities/scripts/souffleur.py --solve-model claude-haiku-4-5

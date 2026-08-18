@@ -21,8 +21,10 @@
 <video id="preview" playsinline muted></video>
 <select id="cameras"></select>
 <button id="capture">Capture</button>
+<button id="solve">Solve</button>
 <button id="record">Start</button>
 <div id="status">Idle</div>
+<div id="solution"></div>
 <script>
 
 const AUDIO_SAMPLING_RATE = 16000;
@@ -32,6 +34,8 @@ const recordButton = document.getElementById("record");
 const cameraSelect = document.getElementById("cameras");
 const captureButton = document.getElementById("capture");
 const previewVideo = document.getElementById("preview");
+const solveButton = document.getElementById("solve");
+const solutionField = document.getElementById("solution");
 
 let audioContext = null;
 let audioStream = null;
@@ -131,7 +135,33 @@ async function capture(upload) {
     : `Upload failed with status ${response.status}`;
 }
 
+async function solve() {
+  const response = await fetch("/solve", { method: "POST" });
+  if (!response.ok) throw new Error(`status ${response.status}`);
+  const { answers } = await response.json();
+  solutionField.replaceChildren(...answers.flatMap(({ label, query, text }) => {
+    const heading = document.createElement("h3");
+    heading.textContent = query ? `[${label}] ${query}` : `[${label}]`;
+    const body = document.createElement("div");
+    body.textContent = text;
+    return [heading, body];
+  }));
+  if (!answers.length) solutionField.textContent = "No answer.";
+}
+
 cameraSelect.onchange = () => startCamera();
+
+solveButton.onclick = async () => {
+  solveButton.disabled = true;
+  statusField.textContent = "Solving...";
+  try {
+    await solve();
+  } catch (error) {
+    statusField.textContent = `Solve failed due to ${error.message}`;
+  } finally {
+    solveButton.disabled = false;
+  }
+};
 
 captureButton.onclick = async () => {
   captureButton.disabled = true;
