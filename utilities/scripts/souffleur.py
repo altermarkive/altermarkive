@@ -72,11 +72,6 @@ class Mode(str, enum.Enum):
     QUESTIONS = 'questions'
 
 
-class SolveMode(str, enum.Enum):
-    LLM = 'llm'
-    RAG = 'rag'
-
-
 WHISPER_HUGGINGFACE_ID = 'openai/whisper-large-v3'
 
 
@@ -142,6 +137,13 @@ class AudioChunk:
 class Chunk:
     title: str
     content: str
+
+
+@dataclasses.dataclass
+class Answer:
+    label: str    # solver that produced this, plus its score where it has one
+    query: str    # what the solver keyed on, shown as the header; blank to omit
+    text: str
 
 
 def load_chunks(paths: list[str]) -> list[Chunk]:
@@ -614,8 +616,10 @@ def solver_worker_llm(
     state: SessionState,
     exit: threading.Event,
     client: ChatAnthropic,
+    answers: queue.Queue['Answer | None'],
     interval: float = 0.5,
 ) -> None:
+    """Generates an answer to each new distilled assignment."""
     previous_assignment = ''
     while not exit.is_set():
         _, _, assignment = state.snapshot()
@@ -625,13 +629,7 @@ def solver_worker_llm(
         previous_assignment = assignment
         try:
             response = client.invoke([HumanMessage(content=PROMPT_SOLUTION.format(assignment=assignment))])
-            text = response.content.strip()
-            state.update_solution(text)
-            print('\n===\n')
-            print(state.assignment)
-            print('\n--- [LLM] ---\n')
-            print(state.solution)
-            print('\n---\n')
+            answers.put(Answer('LLM', assignment, response.content.strip()))
         except Exception as e:
             print(f'Solver error: {e}')
 
@@ -640,42 +638,52 @@ def solver_worker_rag(
     state: SessionState,
     exit: threading.Event,
     retriever: Retriever,
-    fallback_client: ChatAnthropic,
     min_score: float,
+    answers: queue.Queue['Answer | None'],
     interval: float = 0.5,
     transcript_lines: int = RAG_TRANSCRIPT_LINES,
 ) -> None:
-    previous_assignment = ''
+    """Retrieves from the corpus on every new speech segment.
+
+    Runs off the raw transcript tail rather than the distilled assignment, so it
+    is independent of the distiller and answers a whole round-trip earlier. Stays
+    silent below `min_score`: the LLM solver covers the same assignment anyway,
+    so there is nothing here to fall back to.
+    """
+    previous_transcript = ''
     while not exit.is_set():
-        transcript, _, assignment = state.snapshot()
-        if assignment == previous_assignment or not assignment:
+        transcript, _, _ = state.snapshot()
+        if transcript == previous_transcript or not transcript:
             time.sleep(interval)
             continue
-        previous_assignment = assignment
-        # Retrieval reads the raw tail of the transcript, not the distilled assignment:
-        # the summary drops the incidental wording the lexical half of the hybrid index
-        # matches on. The assignment stays the trigger and the LLM fallback's input.
-        query = '\n'.join(transcript.splitlines()[-transcript_lines:]) or assignment
+        previous_transcript = transcript
+        query = '\n'.join(transcript.splitlines()[-transcript_lines:])
         try:
             chunk, confident, top_score = retriever.top1_with_confidence_without_margin(query, min_score)
             if confident:
-                state.update_solution(chunk.content)
-                print('\n===\n')
-                print(state.assignment)
-                print(f'\n--- [RAG score {top_score:.3f}] ---\n')
-                print(state.solution)
-                print('\n---\n')
-            else:
-                response = fallback_client.invoke([HumanMessage(content=PROMPT_SOLUTION.format(assignment=assignment))])
-                text = response.content.strip()
-                state.update_solution(text)
-                print('\n===\n')
-                print(state.assignment)
-                print(f'\n--- [LLM (RAG score {top_score:.3f})] ---\n')
-                print(state.solution)
-                print('\n---\n')
+                # No header: the retrieval key adds nothing next to the chunk itself.
+                answers.put(Answer(f'RAG score {top_score:.3f}', '', chunk.content))
         except Exception as e:
             print(f'RAG solver error: {e}')
+
+
+def printer_worker(
+    state: SessionState,
+    exit: threading.Event,
+    answers: queue.Queue['Answer | None'],
+) -> None:
+    """Sole writer to stdout for solver output, so two solvers cannot interleave."""
+    while not exit.is_set():
+        answer = answers.get()
+        if answer is None:
+            break
+        state.update_solution(answer.text)
+        print('\n===\n')
+        if answer.query:
+            print(answer.query)
+        print(f'\n--- [{answer.label}] ---\n')
+        print(answer.text)
+        print('\n---\n')
 
 
 def make_client(model: str, effort: str | None = None, max_tokens: int = MAX_TOKENS) -> ChatAnthropic:
@@ -748,17 +756,12 @@ def main(
     solve_model: str = typer.Option(
         DEFAULT_MODEL,
         '--solve-model',
-        help='Anthropic model used for solving assignments. In --solve-mode=rag, also used as LLM fallback when retrieval confidence is low. Set ANTHROPIC_API_KEY.',
-    ),
-    solve_mode: SolveMode = typer.Option(
-        SolveMode.LLM,
-        '--solve-mode',
-        help='How the solver produces answers: "llm" (generate via LLM, default) or "rag" (retrieve from --solve-content files, with LLM fallback when confidence is low).',
+        help='Anthropic model used for solving assignments. Set ANTHROPIC_API_KEY.',
     ),
     solve_content: list[str] = typer.Option(
         [],
         '--solve-content',
-        help='Paths to text files used as the RAG corpus. Used when --solve-mode=rag. Each file is chunked on "---" lines; each chunk needs a "## Title" line as its retrieval key.',
+        help='Paths to text files used as the RAG corpus. The RAG solver runs alongside the LLM solver whenever these are given, and is skipped otherwise. Each file is chunked on "---" lines; each chunk needs a "## Title" line as its retrieval key.',
     ),
     embed_model: str = typer.Option(
         'Qwen/Qwen3-Embedding-0.6B',
@@ -792,27 +795,23 @@ def main(
     print('Model loaded. Listening... (Ctrl+C to exit)')
 
     audio: queue.Queue[AudioChunk | None] = queue.Queue()
+    answers: queue.Queue[Answer | None] = queue.Queue()
     multi_source = source == Source.ALL or source == Source.AUDIO
     exit = threading.Event()
     state = SessionState()
 
-    if solve_mode == SolveMode.RAG:
-        if not solve_content:
-            print('No --solve-content provided, falling back to --solve-mode=llm')
-            solve_mode = SolveMode.LLM
     distill_client = make_client(distill_model)
     solve_client = make_client(solve_model, effort=SOLVE_EFFORT, max_tokens=SOLVE_MAX_TOKENS)
 
     retriever: Retriever | None = None
-    if solve_mode == SolveMode.RAG:
+    if solve_content:
         print('Loading embedder and indexing corpus...')
         chunks = load_chunks(solve_content)
-        if not chunks:
-            print('No valid chunks found in --solve-content files, falling back to --solve-mode=llm')
-            solve_mode = SolveMode.LLM
-        else:
+        if chunks:
             retriever = Retriever(chunks, embed_model)
             print(f'Indexed {len(chunks)} chunks.')
+        else:
+            print('No valid chunks found in --solve-content files, running the LLM solver only.')
 
     threads: list[threading.Thread] = []
     transcriber_thread = threading.Thread(
@@ -853,21 +852,23 @@ def main(
         daemon=True,
     )
     threads.append(distiller_thread)
-    match solve_mode:
-        case SolveMode.LLM:
-            solver_thread = threading.Thread(
-                target=solver_worker_llm,
-                args=(state, exit, solve_client),
-                daemon=True,
-            )
-        case SolveMode.RAG:
-            solver_thread = threading.Thread(
-                target=solver_worker_rag,
-                args=(state, exit, retriever, solve_client, rag_min_score),
-                kwargs={'transcript_lines': rag_transcript_lines},
-                daemon=True,
-            )
-    threads.append(solver_thread)
+    threads.append(threading.Thread(
+        target=solver_worker_llm,
+        args=(state, exit, solve_client, answers),
+        daemon=True,
+    ))
+    if retriever is not None:
+        threads.append(threading.Thread(
+            target=solver_worker_rag,
+            args=(state, exit, retriever, rag_min_score, answers),
+            kwargs={'transcript_lines': rag_transcript_lines},
+            daemon=True,
+        ))
+    threads.append(threading.Thread(
+        target=printer_worker,
+        args=(state, exit, answers),
+        daemon=True,
+    ))
     for thread in threads:
         thread.start()
 
@@ -881,6 +882,7 @@ def main(
             thread.join(timeout=1)
     finally:
         audio.put(None)
+        answers.put(None)
 
 
 if __name__ == '__main__':
