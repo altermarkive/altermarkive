@@ -128,6 +128,11 @@ SOLVE_EFFORT = 'low'
 # needs headroom the other roles do not - without it a long deliberation eats
 # the budget and the answer is truncated mid-sentence.
 SOLVE_MAX_TOKENS = 8192
+# One transcript line is one VAD segment. With --min-silence-ms=600 a segment ends
+# at the first pause past 600 ms and is capped at --max-speech-ms=15000, so lines
+# run 0.3-15 s with conversational speech landing around 3-5 s. 15 lines is the
+# middle of that: roughly a minute of speech, a couple of minutes of slow Q&A.
+RAG_TRANSCRIPT_LINES = 15
 
 
 PROMPT_OCR_NANONETS = 'Extract all text, preserving code structure and formatting.'
@@ -685,16 +690,21 @@ def solver_worker_rag(
     fallback_client: ChatAnthropic,
     min_score: float,
     interval: float = 0.5,
+    transcript_lines: int = RAG_TRANSCRIPT_LINES,
 ) -> None:
     previous_assignment = ''
     while not exit.is_set():
-        _, _, assignment = state.snapshot()
+        transcript, _, assignment = state.snapshot()
         if assignment == previous_assignment or not assignment:
             time.sleep(interval)
             continue
         previous_assignment = assignment
+        # Retrieval reads the raw tail of the transcript, not the distilled assignment:
+        # the summary drops the incidental wording the lexical half of the hybrid index
+        # matches on. The assignment stays the trigger and the LLM fallback's input.
+        query = '\n'.join(transcript.splitlines()[-transcript_lines:]) or assignment
         try:
-            chunk, confident, top_score = retriever.top1_with_confidence_without_margin(assignment, min_score)
+            chunk, confident, top_score = retriever.top1_with_confidence_without_margin(query, min_score)
             if confident:
                 state.update_solution(chunk.content)
                 print('\n===\n')
@@ -812,6 +822,11 @@ def main(
         '--rag-min-score',
         help='Minimum dense cosine similarity for the RAG top match to be considered confident. Below this threshold, falls back to LLM if available.',
     ),
+    rag_transcript_lines: int = typer.Option(
+        RAG_TRANSCRIPT_LINES,
+        '--rag-transcript-lines',
+        help='Number of trailing transcript lines (VAD segments) used as the RAG query. One line is one speech segment, so the default of 15 covers roughly a minute of speech.',
+    ),
 ) -> None:
     sources = pulse_sources()
     if list_devices:
@@ -901,6 +916,7 @@ def main(
             solver_thread = threading.Thread(
                 target=solver_worker_rag,
                 args=(state, exit, retriever, solve_client, rag_min_score),
+                kwargs={'transcript_lines': rag_transcript_lines},
                 daemon=True,
             )
     threads.append(solver_thread)
