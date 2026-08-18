@@ -14,9 +14,7 @@
 #     "typer",
 # ]
 # ///
-# Transcribes live audio from microphone and/or speaker playback (loopback).
-# Captures audio via ffmpeg using PulseAudio sources.
-# Run with --list-devices to find available source names.
+# Transcribes live audio and alongside a screenshot uses an LLM to solve an assignment they contain.
 
 import base64
 import dataclasses
