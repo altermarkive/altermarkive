@@ -1,12 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
 <title>Souffleur</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/jetbrains-mono@5.3.0/index.min.css"/>
 <style>
 :root {
   color-scheme: dark;
+}
+* {
+  font-family: "JetBrains Mono Variable", ui-monospace, monospace;
 }
 </style>
 </head>
@@ -85,6 +89,7 @@ recordButton.onclick = () => {
   if (!audioContext) audioContext = new AudioContext({ sampleRate: AUDIO_SAMPLING_RATE });
   start();
 };
+
 </script>
 </body>
 </html>
