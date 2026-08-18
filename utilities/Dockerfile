@@ -50,7 +50,8 @@ ENV UV_LINK_MODE=copy \
 # Initiate Virtual Environment
 RUN /bin/uv venv $VIRTUAL_ENV
 # Install utilities
-ADD scripts/* /usr/local/bin/
+ADD scripts/*.py /usr/local/bin/
+ADD scripts/*.html /usr/local/bin/
 RUN chmod +x /usr/local/bin/*.py
 # Containers launched from inside are siblings on the host, not children.
 # The compose binary ships plugin-only, so expose it on PATH where both the

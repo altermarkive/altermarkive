@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Souffleur</title>
+<style>
+:root {
+  color-scheme: dark;
+}
+</style>
+</head>
+<body>
+<button id="record">Start</button>
+<div id="status">Idle</div>
+<div id="sample"></div>
+<script>
+
+const AUDIO_SAMPLING_RATE = 16000;
+
+const statusField = document.getElementById("status");
+const recordButton = document.getElementById("record");
+const sampleField = document.getElementById("sample");
+
+let audioContext = null;
+let stream = null;
+let sourceNode = null;
+let workletNode = null;
+let muteNode = null;
+
+const WORKLET_CODE = `
+class PCM16Processor extends AudioWorkletProcessor {
+  process(inputs) {
+    const samples = inputs[0]?.[0];
+    if (samples) {
+      const pcm = Int16Array.from(samples, (v) => v * 0x7fff);
+      this.port.postMessage(pcm, [pcm.buffer]);
+    }
+    return true;
+  }
+}
+registerProcessor('pcm16-processor', PCM16Processor);
+`;
+
+async function start() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    statusField.textContent = window.isSecureContext ? "Microphone inaccessible" : "Microphone requires HTTPS";
+    recordButton.hidden = false;
+    return;
+  }
+  statusField.textContent = "Microphone starting...";
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        sampleRate: AUDIO_SAMPLING_RATE,
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
+    });
+  } catch (error) {
+    statusField.textContent = `Microphone unavailable due to ${error.message}`;
+    recordButton.hidden = false;
+    return;
+  }
+  await audioContext.resume();
+  const url = URL.createObjectURL(new Blob([WORKLET_CODE], { type: "application/javascript" }));
+  try {
+    await audioContext.audioWorklet.addModule(url);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+  sourceNode = audioContext.createMediaStreamSource(stream);
+  workletNode = new AudioWorkletNode(audioContext, "pcm16-processor");
+  workletNode.port.onmessage = (event) => { sampleField.textContent = event.data[event.data.length - 1]; };
+  sourceNode.connect(workletNode);
+  muteNode = audioContext.createGain();
+  muteNode.gain.value = 0;
+  workletNode.connect(muteNode).connect(audioContext.destination);
+  statusField.textContent = `Microphone capturing at ${audioContext.sampleRate} Hz, 16-bit mono.`;
+}
+
+recordButton.onclick = () => {
+  recordButton.hidden = true;
+  if (!audioContext) audioContext = new AudioContext({ sampleRate: AUDIO_SAMPLING_RATE });
+  start();
+};
+</script>
+</body>
+</html>
