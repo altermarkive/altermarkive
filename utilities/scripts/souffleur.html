@@ -16,6 +16,9 @@
 </head>
 <body>
 <button id="record">Start</button>
+<select id="cameras"></select>
+<button id="capture">Capture</button>
+<video id="preview" playsinline muted></video>
 <div id="status">Idle</div>
 <script>
 
@@ -23,13 +26,17 @@ const AUDIO_SAMPLING_RATE = 16000;
 
 const statusField = document.getElementById("status");
 const recordButton = document.getElementById("record");
+const cameraSelect = document.getElementById("cameras");
+const captureButton = document.getElementById("capture");
+const previewVideo = document.getElementById("preview");
 
 let audioContext = null;
-let stream = null;
+let audioStream = null;
 let sourceNode = null;
 let workletNode = null;
 let muteNode = null;
 let socket = null;
+let cameraStream = null;
 
 const WORKLET_CODE = `
 class AudioProcessor extends AudioWorkletProcessor {
@@ -53,7 +60,7 @@ async function start() {
   }
   statusField.textContent = "Microphone starting...";
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
+    audioStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
         sampleRate: AUDIO_SAMPLING_RATE,
@@ -74,7 +81,7 @@ async function start() {
     URL.revokeObjectURL(url);
   }
   socket = new WebSocket(`wss://${location.host}/audio`);
-  sourceNode = audioContext.createMediaStreamSource(stream);
+  sourceNode = audioContext.createMediaStreamSource(audioStream);
   workletNode = new AudioWorkletNode(audioContext, "audio-processor");
   workletNode.port.onmessage = (event) => {
     if (socket.readyState === WebSocket.OPEN) socket.send(event.data.buffer);
@@ -86,10 +93,66 @@ async function start() {
   statusField.textContent = `Microphone capturing at ${audioContext.sampleRate} Hz, mono.`;
 }
 
-recordButton.onclick = () => {
+async function listCameras() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const cameras = devices.filter((device) => device.kind === "videoinput");
+  cameraSelect.replaceChildren(...cameras.map((camera, index) => {
+    const option = document.createElement("option");
+    option.value = camera.deviceId;
+    option.textContent = camera.label || `Camera ${index + 1}`;
+    return option;
+  }));
+  cameraSelect.value = cameras[0]?.deviceId ?? "";
+}
+
+async function startCamera() {
+  if (cameraStream) cameraStream.getTracks().forEach((track) => track.stop());
+  cameraStream = await navigator.mediaDevices.getUserMedia({
+    video: cameraSelect.value ? { deviceId: { exact: cameraSelect.value } } : true,
+  });
+  previewVideo.srcObject = cameraStream;
+  await previewVideo.play();
+}
+
+async function capture(upload) {
+  if (!cameraStream) await startCamera();
+  const canvas = document.createElement("canvas");
+  canvas.width = previewVideo.videoWidth;
+  canvas.height = previewVideo.videoHeight;
+  canvas.getContext("2d").drawImage(previewVideo, 0, 0);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+  if (!upload) return;
+  const response = await fetch("/screenshot", { method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" } });
+  statusField.textContent = response.ok
+    ? `Captured ${canvas.width}x${canvas.height}, ${blob.size} bytes uploaded.`
+    : `Upload failed with status ${response.status}`;
+}
+
+cameraSelect.onchange = () => startCamera();
+
+captureButton.onclick = async () => {
+  captureButton.disabled = true;
+  try {
+    await capture(true);
+  } catch (error) {
+    statusField.textContent = `Capture failed due to ${error.message}`;
+  } finally {
+    captureButton.disabled = false;
+  }
+};
+
+listCameras();
+
+recordButton.onclick = async () => {
   recordButton.hidden = true;
   if (!audioContext) audioContext = new AudioContext({ sampleRate: AUDIO_SAMPLING_RATE });
-  start();
+  await start();
+  try {
+    await capture(false);
+    await listCameras();
+  } catch (error) {
+    statusField.textContent = `Camera unavailable due to ${error.message}`;
+  }
 };
 
 </script>

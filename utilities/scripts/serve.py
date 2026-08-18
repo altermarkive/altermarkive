@@ -24,10 +24,11 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 HTML = Path(__file__).with_name("souffleur.html")
+SCREENSHOT = Path(__file__).with_name("screenshot.jpg")
 CERT = Path(__file__).with_name("serve.crt")
 KEY = Path(__file__).with_name("serve.key")
 
@@ -37,6 +38,13 @@ app = FastAPI()
 @app.get("/")
 def root() -> FileResponse:
     return FileResponse(HTML)
+
+
+@app.post("/screenshot")
+async def screenshot(request: Request) -> dict[str, int]:
+    image = await request.body()
+    SCREENSHOT.write_bytes(image)
+    return {"bytes": len(image)}
 
 
 @app.websocket("/audio")
