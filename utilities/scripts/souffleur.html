@@ -17,33 +17,32 @@
 <body>
 <button id="record">Start</button>
 <div id="status">Idle</div>
-<div id="sample"></div>
 <script>
 
 const AUDIO_SAMPLING_RATE = 16000;
 
 const statusField = document.getElementById("status");
 const recordButton = document.getElementById("record");
-const sampleField = document.getElementById("sample");
 
 let audioContext = null;
 let stream = null;
 let sourceNode = null;
 let workletNode = null;
 let muteNode = null;
+let socket = null;
 
 const WORKLET_CODE = `
-class PCM16Processor extends AudioWorkletProcessor {
+class AudioProcessor extends AudioWorkletProcessor {
   process(inputs) {
     const samples = inputs[0]?.[0];
     if (samples) {
-      const pcm = Int16Array.from(samples, (v) => v * 0x7fff);
-      this.port.postMessage(pcm, [pcm.buffer]);
+      const block = new Float32Array(samples);
+      this.port.postMessage(block, [block.buffer]);
     }
     return true;
   }
 }
-registerProcessor('pcm16-processor', PCM16Processor);
+registerProcessor('audio-processor', AudioProcessor);
 `;
 
 async function start() {
@@ -74,14 +73,17 @@ async function start() {
   } finally {
     URL.revokeObjectURL(url);
   }
+  socket = new WebSocket(`wss://${location.host}/audio`);
   sourceNode = audioContext.createMediaStreamSource(stream);
-  workletNode = new AudioWorkletNode(audioContext, "pcm16-processor");
-  workletNode.port.onmessage = (event) => { sampleField.textContent = event.data[event.data.length - 1]; };
+  workletNode = new AudioWorkletNode(audioContext, "audio-processor");
+  workletNode.port.onmessage = (event) => {
+    if (socket.readyState === WebSocket.OPEN) socket.send(event.data.buffer);
+  };
   sourceNode.connect(workletNode);
   muteNode = audioContext.createGain();
   muteNode.gain.value = 0;
   workletNode.connect(muteNode).connect(audioContext.destination);
-  statusField.textContent = `Microphone capturing at ${audioContext.sampleRate} Hz, 16-bit mono.`;
+  statusField.textContent = `Microphone capturing at ${audioContext.sampleRate} Hz, mono.`;
 }
 
 recordButton.onclick = () => {

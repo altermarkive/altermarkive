@@ -6,6 +6,7 @@
 #     "cryptography",
 #     "fastapi",
 #     "uvicorn",
+#     "websockets",
 # ]
 # ///
 # Minimal FastAPI server exposing souffleur.html at the root path over HTTPS.
@@ -15,13 +16,15 @@
 
 import datetime
 import socket
+import sys
+from array import array
 from pathlib import Path
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 HTML = Path(__file__).with_name("souffleur.html")
@@ -34,6 +37,19 @@ app = FastAPI()
 @app.get("/")
 def root() -> FileResponse:
     return FileResponse(HTML)
+
+
+@app.websocket("/audio")
+async def audio(websocket: WebSocket) -> None:
+    await websocket.accept()
+    try:
+        while True:
+            block = array("f", await websocket.receive_bytes())
+            pcm = [int(max(-1.0, min(1.0, v)) * 0x7fff) for v in block]
+            sys.stdout.write(f"\r{pcm[-1]:>6}")
+            sys.stdout.flush()
+    except WebSocketDisconnect:
+        pass
 
 
 def ensure_cert() -> None:
