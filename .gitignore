@@ -1,5 +1,6 @@
 __pycache__
 .claude/settings.local.json
+.pytest_cache
 screenshot.jpg
 transcript.txt
 souffleur.crt

@@ -1,9 +1,0 @@
----
-- name: Swap - Disable Now
-  command: swapoff -a
-
-- name: Slurm - Disable Always
-  lineinfile:
-    path: /etc/fstab
-    regexp: '^.*swap.*'
-    state: absent
