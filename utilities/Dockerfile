@@ -39,8 +39,8 @@ ENV UV_LINK_MODE=copy \
 # Initiate Virtual Environment
 RUN /bin/uv venv $VIRTUAL_ENV
 # Install utilities
-ADD scripts/*.py /usr/local/bin/
-ADD scripts/*.html /usr/local/bin/
+COPY scripts/*.py /usr/local/bin/
+COPY scripts/*.html /usr/local/bin/
 RUN chmod +x /usr/local/bin/*.py
 
 ENV USER=user
