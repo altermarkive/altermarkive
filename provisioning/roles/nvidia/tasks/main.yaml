@@ -58,6 +58,11 @@
 - name: NVIDIA - Container Toolkit GPG Dearmor
   command: "gpg -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg --batch --yes --dearmor {{ container_toolkit_key.path }}"
 
+- name: NVIDIA - Container Toolkit GPG cleanup
+  file:
+    path: "{{ container_toolkit_key.path }}"
+    state: absent
+
 - name: NVIDIA - Container Toolkit Repository
   apt_repository:
     repo: "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /"
