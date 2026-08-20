@@ -1,5 +1,5 @@
 ---
-name: utilities
+name: souffleur
 on:
   schedule:
     - cron: "0 0 * * 1"
@@ -14,7 +14,7 @@ jobs:
       - name: Tags
         id: tags
         run: |
-          DOCKER_IMAGE='ghcr.io/${{ github.repository_owner }}/utilities'
+          DOCKER_IMAGE='ghcr.io/${{ github.repository_owner }}/souffleur'
           TAGS="${DOCKER_IMAGE}:latest,${DOCKER_IMAGE}:$(date +%Y%m%d%H%M%S)"
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
       - name: QEMU
@@ -39,5 +39,5 @@ jobs:
         uses: actions/delete-package-versions@v5
         with:
           min-versions-to-keep: 20
-          package-name: utilities
+          package-name: souffleur
           package-type: container

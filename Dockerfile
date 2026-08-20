@@ -38,7 +38,7 @@ ENV UV_LINK_MODE=copy \
     VIRTUAL_ENV=/app/venv
 # Initiate Virtual Environment
 RUN /bin/uv venv $VIRTUAL_ENV
-# Install utilities
+# Install Souffleur
 COPY scripts/*.py /usr/local/bin/
 COPY scripts/*.html /usr/local/bin/
 RUN chmod +x /usr/local/bin/*.py

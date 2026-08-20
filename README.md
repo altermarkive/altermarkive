@@ -21,5 +21,5 @@ podman run --rm -it \
 Then:
 
 ```shell
-uv run utilities/scripts/souffleur.py
+uv run scripts/souffleur.py
 ```

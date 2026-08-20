@@ -608,7 +608,7 @@ if __name__ == '__main__':
     typer.run(main)
 
 
-# Tests - run with: uv run --with pytest --with numpy --with soundfile --with torch --with torchvision --with transformers --with typer --with accelerate --with librosa --with pillow --with mistral-common python -m pytest utilities/scripts/live.py -v
+# Tests - run with: uv run --with pytest --with numpy --with soundfile --with torch --with torchvision --with transformers --with typer --with accelerate --with librosa --with pillow --with mistral-common python -m pytest scripts/live.py -v
 class TestVadAccumulator:
     _FRAME_SAMPLES = SAMPLE_RATE * 20 // 1000  # 320 samples per 20ms frame
 
@@ -716,6 +716,6 @@ class TestResponseText:
 
 
 # The solver hits the Anthropic API - export ANTHROPIC_API_KEY first.
-# Frequently used: uv run utilities/scripts/souffleur.py
-# RAG alongside the LLM: uv run utilities/scripts/souffleur.py --solve-content something1.md --solve-content something2.md
-# Thorough/slower solving: uv run utilities/scripts/souffleur.py --solve-model claude-opus-5
+# Frequently used: uv run scripts/souffleur.py
+# RAG alongside the LLM: uv run scripts/souffleur.py --solve-content something1.md --solve-content something2.md
+# Thorough/slower solving: uv run scripts/souffleur.py --solve-model claude-opus-5
