@@ -11,8 +11,6 @@ RUN apt-get -yq update && \
         build-essential \
         curl \
         git \
-        git-lfs \
-        jq \
         libasound2-plugins \
         ncurses-bin \
         pipewire-bin \
@@ -25,15 +23,11 @@ RUN apt-get -yq update && \
 # build-essential - N/A
 # curl - N/A
 # git - N/A
-# git-lfs - N/A
-# jq - N/A
-# libasound2-plugins - Claude Code voice (ALSA → PulseAudio routing)
+# libasound2-plugins - Claude Code voice (ALSA to PulseAudio routing)
 # ncurses-bin - Claude Code
 # pipewire-bin - Claude Code
 # npm - MCP (provides node, npx)
-# podman-remote - builds/runs containers against the host podman API socket
 # ripgrep - Claude Code
-# unzip - N/A
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 ENV UV_LINK_MODE=copy \
