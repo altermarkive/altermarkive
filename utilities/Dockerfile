@@ -16,12 +16,11 @@ RUN apt-get -yq update && \
         pipewire-bin \
         npm \
         ripgrep \
-        sudo \
-        unzip && \
+        sudo && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 # build-essential - N/A
-# curl - N/A
+# curl - Claude Code
 # git - N/A
 # libasound2-plugins - Claude Code voice (ALSA to PulseAudio routing)
 # ncurses-bin - Claude Code
@@ -33,6 +32,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
     UV_HTTP_TIMEOUT=60 \
+    UV_NO_CACHE=1 \
     UV_PYTHON=python3.13 \
     UV_PYTHON_INSTALL_DIR=/app/python \
     VIRTUAL_ENV=/app/venv
