@@ -21,27 +21,27 @@
 - name: Fonts - JetBrains Mono installation
   command: unzip -f -j "{{ jetbrains_mono_zip.path }}" "fonts/ttf/*" -d /usr/local/share/fonts/jetbrains_mono
 
-- name: Fonts - Microsoft Cascadia Code directory
+- name: Fonts - DejaVu directory
   file:
-    path: /usr/local/share/fonts/microsoft_cascadia_code
+    path: /usr/local/share/fonts/dejavu
     state: directory
     mode: "0755"
 
-- name: Fonts - Microsoft Cascadia Code archive
+- name: Fonts - DejaVu archive
   tempfile:
     state: file
-    prefix: CascadiaCode.
+    prefix: DejaVuSans.
     suffix: .zip
-  register: microsoft_cascadia_code_zip
+  register: dejavu_zip
 
-- name: Fonts - Microsoft Cascadia Code fetch
+- name: Fonts - DejaVu fetch
   get_url:
-    url: https://github.com/microsoft/cascadia-code/releases/download/v2407.24/CascadiaCode-2407.24.zip
-    dest: "{{ microsoft_cascadia_code_zip.path }}"
+    url: https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip
+    dest: "{{ dejavu_zip.path }}"
     force: true
 
-- name: Fonts - Microsoft Cascadia Code installation
-  command: unzip -f -j "{{ microsoft_cascadia_code_zip.path }}" "otf/static/*" -d /usr/local/share/fonts/microsoft_cascadia_code
+- name: Fonts - DejaVu installation
+  command: unzip -f -j "{{ dejavu_zip.path }}" "dejavu-fonts-ttf-2.37/ttf/DejaVuSans-Oblique.ttf" "dejavu-fonts-ttf-2.37/ttf/DejaVuSans-BoldOblique.ttf" -d /usr/local/share/fonts/dejavu
 
 - name: Fonts - Reload
   command: fc-cache -f -v
