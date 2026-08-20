@@ -10,7 +10,6 @@ RUN apt-get -yq update && \
         -o APT::Install-Suggests=false \
         build-essential \
         curl \
-        ffmpeg \
         git \
         git-lfs \
         jq \
@@ -25,7 +24,6 @@ RUN apt-get -yq update && \
     rm -rf /var/lib/apt/lists/*
 # build-essential - N/A
 # curl - N/A
-# ffmpeg - N/A
 # git - N/A
 # git-lfs - N/A
 # jq - N/A
