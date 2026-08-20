@@ -10,7 +10,6 @@ RUN apt-get -yq update && \
         -o APT::Install-Suggests=false \
         build-essential \
         curl \
-        docker-compose-v2 \
         ffmpeg \
         git \
         git-lfs \
@@ -19,7 +18,6 @@ RUN apt-get -yq update && \
         ncurses-bin \
         pipewire-bin \
         npm \
-        podman-remote \
         ripgrep \
         sudo \
         unzip && \
@@ -27,7 +25,6 @@ RUN apt-get -yq update && \
     rm -rf /var/lib/apt/lists/*
 # build-essential - N/A
 # curl - N/A
-# docker-compose-v2 - compose provider for podman-remote
 # ffmpeg - N/A
 # git - N/A
 # git-lfs - N/A
@@ -53,12 +50,6 @@ RUN /bin/uv venv $VIRTUAL_ENV
 ADD scripts/*.py /usr/local/bin/
 ADD scripts/*.html /usr/local/bin/
 RUN chmod +x /usr/local/bin/*.py
-# Containers launched from inside are siblings on the host, not children.
-# The compose binary ships plugin-only, so expose it on PATH where both the
-# standalone `docker-compose` form and podman's compose provider lookup find it.
-RUN ln -s /usr/bin/podman-remote /usr/local/bin/podman && \
-    ln -s /usr/bin/podman-remote /usr/local/bin/docker && \
-    ln -s /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
 
 ENV USER=user
 ENV HOME=/home/$USER
