@@ -1,7 +1,7 @@
 # Sync NVIDIA Driver & CUDA versions (`nvidia-smi`)
 FROM nvidia/cuda:13.3.1-devel-ubuntu24.04
 
-ENV DEBIAN_FRONTEND=noninteractive
+ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get -yq update && \
     apt-get -yq remove python && \
