@@ -3,13 +3,11 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "bm25s",
 #     "cryptography",
 #     "fastapi",
 #     "langchain-anthropic",
 #     "numpy",
 #     "pytest",
-#     "sentence-transformers",
 #     "torch",
 #     "transformers",
 #     "typer",
@@ -20,8 +18,7 @@
 # Serves souffleur.html over HTTPS and solves the assignment the page's audio and
 # camera capture. Audio arrives as Float32 blocks over a WebSocket, is segmented by
 # VAD and transcribed; a still posted to /screenshot is the visual context; the page's
-# Solve button hits /solve/rag and /solve/llm separately, so the fast retrieval answer
-# is not held up by the LLM round trip.
+# Solve button hits /solve, which spots the current question and answers it.
 
 import asyncio
 import base64
@@ -35,7 +32,6 @@ import socket
 import threading
 import warnings
 
-import bm25s
 import numpy as np
 import torch
 import typer
@@ -48,7 +44,6 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
-from sentence_transformers import SentenceTransformer
 from transformers import (
     WhisperForConditionalGeneration,
     WhisperProcessor,
@@ -114,101 +109,13 @@ SOLVE_EFFORT = 'low'
 # needs headroom the other roles do not - without it a long deliberation eats
 # the budget and the answer is truncated mid-sentence.
 SOLVE_MAX_TOKENS = 8192
-# One transcript line is one VAD segment. With --min-silence-ms=600 a segment ends
-# at the first pause past 600 ms and is capped at --max-speech-ms=15000, so lines
-# run 0.3-15 s with conversational speech landing around 3-5 s. 15 lines is the
-# middle of that: roughly a minute of speech, a couple of minutes of slow Q&A.
-RAG_TRANSCRIPT_LINES = 15
-
-
-@dataclasses.dataclass
-class Chunk:
-    title: str
-    content: str
 
 
 @dataclasses.dataclass
 class Answer:
-    label: str    # solver that produced this, plus its score where it has one
+    label: str    # solver that produced this
     query: str    # what the solver keyed on, shown as the header; blank to omit
     text: str
-
-
-def load_chunks(paths: list[str]) -> list[Chunk]:
-    chunks: list[Chunk] = []
-    for path in paths:
-        text = pathlib.Path(path).read_text()
-        for raw in text.split('\n---\n'):
-            lines = raw.strip().splitlines()
-            title_idx = next((i for i, l in enumerate(lines) if l.startswith('## ')), None)
-            if title_idx is None:
-                continue
-            title = lines[title_idx][2:].strip()
-            content = '\n'.join(lines[:title_idx] + lines[title_idx + 1:]).strip()
-            if title and content:
-                chunks.append(Chunk(title, content))
-            elif title_idx is not None:
-                print(f'Warning: skipping chunk with title "{lines[title_idx]}" in {path} (empty content)')
-    return chunks
-
-
-class DenseIndex:
-    def __init__(self, model_id: str, chunks: list[Chunk]) -> None:
-        self.model = SentenceTransformer(model_id)
-        self.embeddings = self.model.encode(
-            [chunk.title for chunk in chunks], normalize_embeddings=True, convert_to_numpy=True,
-        )
-
-    def scores(self, query: str) -> np.ndarray:
-        query_embedding = self.model.encode(
-            [query], prompt_name='query', normalize_embeddings=True, convert_to_numpy=True,
-        )
-        # Cosine similarity per chunk (vectors are unit-normalized)
-        return self.embeddings @ query_embedding[0]
-
-    def rank(self, query: str) -> np.ndarray:
-        return np.argsort(-self.scores(query))
-
-
-class BM25Index:
-    def __init__(self, chunks: list[Chunk]) -> None:
-        self.tokenizer = bm25s.tokenization.Tokenizer(lower=True, stopwords=None)
-        corpus_tokens = self.tokenizer.tokenize([c.title for c in chunks], return_as="tuple")
-        self.retriever = bm25s.BM25()
-        self.retriever.index(corpus_tokens)
-
-    def rank(self, query: str) -> np.ndarray:
-        query_tokens = self.tokenizer.tokenize([query], return_as="string", update_vocab=False)[0]
-        scores = self.retriever.get_scores(query_tokens)
-        return np.argsort(-scores)
-
-
-def reciprocal_rank_fusion(rank_lists: list[np.ndarray], k: int = 60) -> np.ndarray:
-    n = len(rank_lists[0])
-    scores = np.zeros(n)
-    for ranks in rank_lists:
-        for r, idx in enumerate(ranks):
-            scores[idx] += 1.0 / (k + r)
-    return np.argsort(-scores)
-
-
-class Retriever:
-    def __init__(self, chunks: list[Chunk], embed_model: str) -> None:
-        self.chunks = chunks
-        self.dense = DenseIndex(embed_model, chunks)
-        self.bm25 = BM25Index(chunks)
-
-    def _retrieve(self, query: str) -> tuple[np.ndarray, np.ndarray]:
-        dense_scores = self.dense.scores(query)
-        fused = reciprocal_rank_fusion([np.argsort(-dense_scores), self.bm25.rank(query)])
-        return dense_scores, fused
-
-    def top1_with_confidence_without_margin(
-        self, query: str, min_score: float
-    ) -> tuple[Chunk, bool, float]:
-        dense_scores, fused = self._retrieve(query)
-        top_score = float(dense_scores[fused[0]])
-        return self.chunks[fused[0]], top_score >= min_score, top_score
 
 
 @dataclasses.dataclass
@@ -382,32 +289,13 @@ def solve_llm(state: SessionState, client: ChatAnthropic) -> Answer:
     return Answer('LLM', question, answer)
 
 
-def solve_rag(
-    state: SessionState,
-    retriever: Retriever,
-    min_score: float,
-    transcript_lines: int,
-) -> Answer | None:
-    transcript, _ = state.snapshot()
-    if not transcript:
-        return None
-    query = '\n'.join(transcript.splitlines()[-transcript_lines:])
-    chunk, confident, top_score = retriever.top1_with_confidence_without_margin(query, min_score)
-    if not confident:
-        return None
-    return Answer(f'RAG score {top_score:.3f}', '', chunk.content)
-
-
 @dataclasses.dataclass
 class Runtime:
     state: SessionState
     audio: queue.Queue[np.ndarray | None]
     client: ChatAnthropic
-    retriever: Retriever | None
     min_silence_ms: int
     max_speech_ms: int
-    rag_min_score: float
-    rag_transcript_lines: int
 
 
 runtime: Runtime = None  # type: ignore[assignment]
@@ -450,23 +338,9 @@ async def screenshot(request: Request) -> dict[str, int]:
     return {'bytes': len(image)}
 
 
-@app.post('/solve/rag')
-async def rag() -> dict[str, dict[str, str] | None]:
-    if runtime.retriever is None:
-        return {'answer': None}
-    answer = await asyncio.to_thread(
-        solve_rag,
-        runtime.state,
-        runtime.retriever,
-        runtime.rag_min_score,
-        runtime.rag_transcript_lines,
-    )
-    return {'answer': dataclasses.asdict(answer) if answer is not None else None}
-
-
-@app.post('/solve/llm')
-async def llm() -> dict[str, dict[str, str]]:
-    """The slow half: blocking, so it runs on a worker thread."""
+@app.post('/solve')
+async def solve() -> dict[str, dict[str, str]]:
+    """Blocking, so it runs on a worker thread."""
     answer = await asyncio.to_thread(solve_llm, runtime.state, runtime.client)
     return {'answer': dataclasses.asdict(answer)}
 
@@ -540,26 +414,6 @@ def main(
         '--solve-model',
         help='Anthropic model used to spot the current question and answer it. Set ANTHROPIC_API_KEY.',
     ),
-    solve_content: list[str] = typer.Option(
-        [],
-        '--solve-content',
-        help='Paths to text files used as the RAG corpus. The RAG lookup runs alongside the LLM lookup whenever these are given, and is skipped otherwise. Each file is chunked on "---" lines; each chunk needs a "## Title" line as its retrieval key.',
-    ),
-    embed_model: str = typer.Option(
-        'Qwen/Qwen3-Embedding-0.6B',
-        '--embed-model',
-        help='SentenceTransformer model for RAG embeddings. Default is Qwen/Qwen3-Embedding-0.6B (best quality <1B). CPU-friendly alternative: google/embeddinggemma-300m-qat-q8.',
-    ),
-    rag_min_score: float = typer.Option(
-        0.5,
-        '--rag-min-score',
-        help='Minimum dense cosine similarity for the RAG top match to be considered confident. Below this threshold, only the LLM answer is returned.',
-    ),
-    rag_transcript_lines: int = typer.Option(
-        RAG_TRANSCRIPT_LINES,
-        '--rag-transcript-lines',
-        help='Number of trailing transcript lines (VAD segments) used as the RAG query. One line is one speech segment, so the default of 15 covers roughly a minute of speech.',
-    ),
 ) -> None:
     global runtime
 
@@ -571,16 +425,6 @@ def main(
     dtype = torch.float16 if torch.cuda.is_available() else torch.float32
     pipe = WhisperPipeline(WHISPER_HUGGINGFACE_ID, device, dtype)
 
-    retriever: Retriever | None = None
-    if solve_content:
-        print('Loading embedder and indexing corpus...')
-        chunks = load_chunks(solve_content)
-        if chunks:
-            retriever = Retriever(chunks, embed_model)
-            print(f'Indexed {len(chunks)} chunks.')
-        else:
-            print('No valid chunks found in --solve-content files, running the LLM lookup only.')
-
     # TODO: Move the session state client-side, this will allow to have a queue per session
     audio: queue.Queue[np.ndarray | None] = queue.Queue()
     state = SessionState()
@@ -588,11 +432,8 @@ def main(
         state=state,
         audio=audio,
         client=make_client(solve_model, effort=SOLVE_EFFORT, max_tokens=SOLVE_MAX_TOKENS),
-        retriever=retriever,
         min_silence_ms=min_silence_ms,
         max_speech_ms=max_speech_ms,
-        rag_min_score=rag_min_score,
-        rag_transcript_lines=rag_transcript_lines,
     )
 
     threading.Thread(target=transcribe_worker, args=(pipe, audio, state), daemon=True).start()
@@ -717,5 +558,4 @@ class TestResponseText:
 
 # The solver hits the Anthropic API - export ANTHROPIC_API_KEY first.
 # Frequently used: uv run scripts/souffleur.py
-# RAG alongside the LLM: uv run scripts/souffleur.py --solve-content something1.md --solve-content something2.md
 # Thorough/slower solving: uv run scripts/souffleur.py --solve-model claude-opus-5

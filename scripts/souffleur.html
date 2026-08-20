@@ -18,7 +18,7 @@
 select, button {
   font-size: 18pt;
 }
-#rag, #llm {
+#llm {
   white-space: pre-wrap;
   font-size: 9pt;
 }
@@ -31,7 +31,6 @@ select, button {
 <button id="solve">Solve</button>
 <button id="record">Start</button>
 <div id="status">Idle</div>
-<pre id="rag"></pre>
 <pre id="llm"></pre>
 <script>
 
@@ -43,7 +42,6 @@ const cameraSelect = document.getElementById("cameras");
 const captureButton = document.getElementById("capture");
 const previewVideo = document.getElementById("preview");
 const solveButton = document.getElementById("solve");
-const ragField = document.getElementById("rag");
 const llmField = document.getElementById("llm");
 
 let audioContext = null;
@@ -144,29 +142,30 @@ async function capture(upload) {
     : `Upload failed with status ${response.status}`;
 }
 
-async function solve(path, field) {
-  field.textContent = "Solving...";
-  const response = await fetch(path, { method: "POST" });
+async function solve() {
+  llmField.textContent = "Solving...";
+  const response = await fetch("/solve", { method: "POST" });
   if (!response.ok) throw new Error(`status ${response.status}`);
   const { answer } = await response.json();
   if (!answer) {
-    field.textContent = "No answer.";
+    llmField.textContent = "No answer.";
     return;
   }
   const header = answer.query ? `[${answer.label}] ${answer.query}` : `[${answer.label}]`;
-  field.textContent = `${header}\n\n${answer.text}`;
+  llmField.textContent = `${header}\n\n${answer.text}`;
 }
 
 cameraSelect.onchange = () => startCamera();
 
 solveButton.onclick = async () => {
   solveButton.disabled = true;
-  await Promise.allSettled([["/solve/rag", ragField], ["/solve/llm", llmField]].map(
-    ([path, field]) => solve(path, field).catch((error) => {
-      field.textContent = `Failed due to ${error.message}`;
-    }),
-  ));
-  solveButton.disabled = false;
+  try {
+    await solve();
+  } catch (error) {
+    llmField.textContent = `Failed due to ${error.message}`;
+  } finally {
+    solveButton.disabled = false;
+  }
 };
 
 captureButton.onclick = async () => {
