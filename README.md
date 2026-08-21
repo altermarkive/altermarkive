@@ -1,6 +1,48 @@
 # Souffleur
 
-Proof-of-concept for use when practicing interviews or exams - [try it out](https://marek-burza.github.io/souffleur/)!
+Proof-of-concept for use when practicing interviews or exams - [try it out](https://marek-burza.github.io/souffleur/) (deployed as a static site on GitHub Pages)!
+
+The Anthropic API key is entered in a dialog and kept in `LocalStorage`.
+
+## 🏛️ Architecture
+
+`src/App.vue` is the only stateful component. It owns the composables and passes
+plain values down; the child components hold no session state.
+
+```text
+useRecognition(addLine) ──> useTranscript ──> TranscriptPane (editable textarea)
+useCamera ──> CameraPreview + capture() ──┐
+                                          ├─> lib/anthropic solve() ──> AnswerPane
+SettingsDialog (key, model, file upload) ─┘
+```
+
+### 🛣️ Transcription Paths
+
+**Live** uses the Web Speech API (`src/composables/useRecognition.ts`). It cannot be
+pointed at a microphone or fed audio: `SpeechRecognition` has no device property and
+`start()` takes no `MediaStreamTrack` outside a Chrome flag. It owns the mic and uses
+the system default. That is why there is no VAD and no audio streaming in this
+codebase - the recogniser does its own endpointing, emitting one final result per
+utterance.
+
+Because that API is unreliable in the field, the composable restarts on every `end`,
+keeps a 10s watchdog for the silent-death case, and backs off exponentially
+(`RESTART_DELAY_MS` → `MAX_RESTART_DELAY_MS`) so a hard failure cannot spin.
+`recognitionUnavailable()` detects plain Chromium by User-Agent brands: such builds
+ship without Google's API keys, so the constructor exists and the mic opens but every
+attempt ends `audiostart → audioend → error: network`.
+
+**File upload** (`src/lib/transcribeFile.ts`) exists precisely because Web Speech
+cannot accept audio. It runs Whisper locally via Transformers.js, WebGPU with a WASM
+fallback. Notes that matter:
+
+- The `@huggingface/transformers` import is **dynamic** so the ~500 kB chunk and the
+  22 MB ONNX Runtime WASM stay out of the initial load. Keep it that way.
+- `q4` dtype for both halves is deliberate: the fp32 encoder needs a 2.4 GB
+  external-data file and fp16 requires `shader-f16`, which many GPUs lack.
+- `src/lib/audio.ts` decodes inside an `AudioContext({ sampleRate: 16000 })` so
+  resampling happens *during* decode. An hour of 48 kHz stereo lands at ~440 MB
+  instead of ~1.3 GB. Do not "simplify" this to a default AudioContext.
 
 ## 🚀 Bootstrap
 
@@ -36,10 +78,10 @@ pnpm create vuetify
 - Community support: https://community.vuetifyjs.com/
 - Issue tracker: https://issues.vuetifyjs.com/
 
-## 📜 Project Rules
+## 📜 Project Rules & Conventions
 
 - Follow the existing code style and patterns.
-- Use pnpm for running project commands.
+- Use pnpm for running all project commands.
 - Keep code in TypeScript.
 
 ## 🧱 Stack
@@ -59,12 +101,12 @@ pnpm create vuetify
 
 ## 📁 Project Structure
 
-- `src/main.ts` — application entry point
-- `src/App.vue` — root component
-- `src/components/` — reusable Vue components
-- `src/plugins/` — plugin registration and setup
-- `src/styles/` — global styles and theme settings
-- `public/` — static public files
+- `src/main.ts` - application entry point
+- `src/App.vue` - root component
+- `src/components/` - reusable Vue components
+- `src/plugins/` - plugin registration and setup
+- `src/styles/` - global styles and theme settings
+- `public/` - static public files
 
 ## ✨ Enabled Features
 
@@ -101,3 +143,52 @@ pnpm build
 - `pnpm type-check`
 - `pnpm lint`
 - `pnpm lint:fix`
+
+There is no test suite and no test runner. Verify changes with `lint`, `type-check`,
+`build`, and by driving the app in a browser. CI runs `install --frozen-lockfile`,
+`lint`, then `build` - matching that sequence locally is the closest thing to a
+pre-flight check.
+
+## 💥 Gotchas
+
+**Fonts flow through CSS variables.** `src/styles/tailwind.css` defines
+`--font-heading/body/mono`, and `settings.scss` maps Vuetify's `$body-font-family` to
+them. Changing the font is a three-line edit there, not SCSS surgery. Faces are
+bundled by `unplugin-fonts` from `@fontsource-variable/*` - there are no CDN requests
+anywhere in the build, and it should stay that way.
+
+**`base: '/souffleur/'`** in `vite.config.mts` is required for project-page hosting.
+Assets 404 without it.
+
+**The layout has a stability contract.** `.shell` is `100dvh`, controls are
+`flex: 0 0 auto`, and `.content` is `flex: 1 1 0; min-height: 0` so only the pane
+inside the active tab scrolls. This keeps an arriving answer from shifting the
+toolbar. `CameraPreview` has a fixed 64×40 box for the same reason: a `<video>` has no
+intrinsic size until its stream starts.
+
+**`eslint.config.js` ignores `pnpm-workspace.yaml`.** `eslint-config-vuetify` lints
+YAML with a JavaScript comment rule, so *any* `#` comment there is reported as a
+malformed block comment.
+
+## 🔗 Dependencies
+
+`pnpm-workspace.yaml` enforces the recommendations from
+https://pnpm.io/supply-chain-security. The one that bites:
+
+**`minimumReleaseAge: 10080`** - a package version must be a week old before it can be
+resolved, and pnpm 11 checks this against the committed lockfile too. Adding a
+freshly published dependency fails with `ERR_PNPM_NO_MATURE_MATCHING_VERSION`. Either
+target an older version, or add a specific `pkg@version` to `minimumReleaseAgeExclude`
+if the exemption is genuinely justified.
+
+`allowBuilds` denies install scripts for four Node-side transitive packages
+(`@parcel/watcher`, `onnxruntime-node`, `protobufjs`, `sharp`) that a browser build
+never loads. pnpm 11 treats an unapproved install script as a hard error, so a new
+dependency with a postinstall must be added to that map explicitly.
+
+## 🚦 CI
+
+`.github/workflows/souffleur.yml` builds and deploys to Pages on push to `main`. It
+does **not** pin a pnpm version - `pnpm/action-setup` reads `packageManager` from
+`package.json`, so bump that field rather than the workflow. `codeql.yml` scans
+`actions,javascript-typescript`.
