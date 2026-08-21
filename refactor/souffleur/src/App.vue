@@ -2,12 +2,12 @@
   <v-app>
     <v-main class="shell">
       <div class="flex flex-col gap-3 p-4 h-full">
-        <div class="flex items-center gap-3 controls">
+        <div class="flex flex-wrap items-center gap-3 controls">
           <CameraPreview v-model:video="video" />
 
           <v-select
             v-model="selected"
-            class="w-60 flex-none"
+            class="w-60 min-w-0"
             density="compact"
             hide-details
             item-title="label"
@@ -33,9 +33,7 @@
             @click="onSolve"
           />
 
-          <v-spacer />
-
-          <v-btn icon="mdi-cog" variant="text" @click="dialog = true" />
+          <v-btn class="ml-auto" icon="mdi-cog" variant="text" @click="dialog = true" />
         </div>
 
         <div class="text-xs truncate controls" :title="status">{{ status }}</div>

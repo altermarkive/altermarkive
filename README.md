@@ -1,6 +1,6 @@
 # Souffleur
 
-Proof-of-concept for use when practicing interviews or exams.
+Proof-of-concept for use when practicing interviews or exams - [try it out](https://marek-burza.github.io/souffleur/)!
 
 ## 🚀 Bootstrap
 
