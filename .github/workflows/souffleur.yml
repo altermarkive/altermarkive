@@ -15,9 +15,6 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: refactor/souffleur
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -30,7 +27,6 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: refactor/souffleur/pnpm-lock.yaml
       - name: Pages
         uses: actions/configure-pages@v6.0.0
       - name: Install
@@ -42,7 +38,7 @@ jobs:
       - name: Upload
         uses: actions/upload-pages-artifact@v5.0.0
         with:
-          path: refactor/souffleur/dist
+          path: dist
   deploy:
     name: Deploy
     needs: build
@@ -52,4 +48,5 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy
+        id: deployment
         uses: actions/deploy-pages@v5.0.0

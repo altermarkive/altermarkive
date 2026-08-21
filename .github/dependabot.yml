@@ -12,7 +12,7 @@ updates:
         patterns:
           - "*"
   - package-ecosystem: "npm"
-    directory: "/refactor/souffleur"
+    directory: "/"
     schedule:
       interval: "weekly"
     cooldown:
