@@ -46,12 +46,23 @@
         </v-tabs>
 
         <v-tabs-window v-model="tab" class="content">
-          <v-tabs-window-item class="h-full" value="answer">
+          <v-tabs-window-item
+            class="h-full"
+            :reverse-transition="false"
+            :transition="false"
+            value="answer"
+          >
             <AnswerPane :answer="answer" :status="answerStatus" />
           </v-tabs-window-item>
 
-          <v-tabs-window-item class="h-full" value="transcript">
+          <v-tabs-window-item
+            class="h-full"
+            :reverse-transition="false"
+            :transition="false"
+            value="transcript"
+          >
             <TranscriptPane
+              :error="error"
               :interim="interim"
               :lines="lines"
               @download="download"
@@ -180,5 +191,11 @@
 .content :deep(.v-window__container),
 .content :deep(.v-window-item) {
   height: 100%;
+}
+
+/* The underline slides between tabs by default; switching should feel instant. */
+:deep(.v-tabs-slider),
+:deep(.v-tab__slider) {
+  transition: none !important;
 }
 </style>

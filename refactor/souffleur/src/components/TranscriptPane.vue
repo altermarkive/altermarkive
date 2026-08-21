@@ -18,19 +18,25 @@
 <script lang="ts" setup>
   import { computed } from 'vue'
 
-  const { interim, lines } = defineProps<{
+  const { error, interim, lines } = defineProps<{
     lines: string[]
     interim: string
+    error: string
   }>()
 
   const emit = defineEmits<{ download: [] }>()
 
   const body = computed(() => {
     const settled = lines.join('\n')
-    if (!interim) {
-      return settled || 'No speech yet.'
+    if (interim) {
+      return settled ? `${settled}\n${interim}` : interim
     }
-    return settled ? `${settled}\n${interim}` : interim
+    if (settled) {
+      return settled
+    }
+    // With nothing transcribed, a recogniser error is the useful thing to show:
+    // otherwise a dead recogniser is indistinguishable from silence.
+    return error || 'No speech yet.'
   })
 </script>
 

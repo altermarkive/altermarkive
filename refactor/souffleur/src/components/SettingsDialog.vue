@@ -21,9 +21,9 @@
         />
 
         <v-alert
-          v-if="!supported"
+          v-if="unavailable"
           class="mt-6"
-          text="This browser has no Web Speech API, so live transcription will not run."
+          :text="unavailable"
           type="warning"
           variant="tonal"
         />
@@ -39,7 +39,7 @@
 
 <script lang="ts" setup>
   import { ref, watch } from 'vue'
-  import { isRecognitionSupported } from '@/composables/useRecognition'
+  import { recognitionUnavailable } from '@/composables/useRecognition'
   import { MODELS } from '@/lib/anthropic'
   import { loadSettings, saveSettings } from '@/lib/settings'
 
@@ -47,7 +47,7 @@
 
   const emit = defineEmits<{ record: [] }>()
 
-  const supported = isRecognitionSupported()
+  const unavailable = recognitionUnavailable()
   const reveal = ref(false)
 
   const settings = loadSettings()

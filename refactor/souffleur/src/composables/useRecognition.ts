@@ -31,8 +31,35 @@ function constructor (): Constructor | undefined {
   return globalThis.SpeechRecognition ?? globalThis.webkitSpeechRecognition
 }
 
-export function isRecognitionSupported (): boolean {
-  return constructor() !== undefined
+// Plain Chromium ships without Google's API keys, so `SpeechRecognition` exists
+// and the microphone opens, but the speech service is never reachable: every
+// attempt ends `audiostart` -> `audioend` -> `error: network`, with no result.
+//
+// Branded Chromium derivatives (Chrome, Edge, Brave, Opera) each advertise their
+// own vendor brand alongside "Chromium"; a bare build advertises only "Chromium"
+// plus the GREASE placeholder. Browsers without Client Hints - Safari, Firefox -
+// report no brands at all and are not Chromium.
+function isPlainChromium (): boolean {
+  const brands = navigator.userAgentData?.brands
+  if (!brands) {
+    return false
+  }
+  const vendors = brands.filter(
+    ({ brand }) => brand !== 'Chromium' && !/not.*brand/i.test(brand),
+  )
+  return brands.some(({ brand }) => brand === 'Chromium') && vendors.length === 0
+}
+
+// Why live transcription cannot run here, or '' when it can.
+export function recognitionUnavailable (): string {
+  if (!constructor()) {
+    return 'This browser has no Web Speech API, so live transcription will not run.'
+  }
+  if (isPlainChromium()) {
+    return 'This is plain Chromium, which cannot reach the speech service, '
+      + 'so live transcription will not run. Use Google Chrome or Safari.'
+  }
+  return ''
 }
 
 export function useRecognition (onLine: (text: string) => void) {
