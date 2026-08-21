@@ -1,5 +1,5 @@
 ---
-name: souffleur
+name: Souffleur
 on:
   push:
     branches: [main]
