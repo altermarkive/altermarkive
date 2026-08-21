@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "version": "0.0.0",
+  "packageManager": "pnpm@11.22.0",
   "scripts": {
     "dev": "vite",
     "build": "run-p type-check \"build-only {@}\" --",
@@ -13,7 +14,7 @@
     "lint:fix": "eslint --fix"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.120.0",
+    "@anthropic-ai/sdk": "^0.117.1",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@huggingface/transformers": "^4.2.0",
     "@mdi/font": "7.4.47",
