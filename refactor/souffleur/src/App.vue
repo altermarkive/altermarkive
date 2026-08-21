@@ -59,9 +59,9 @@
             value="transcript"
           >
             <TranscriptPane
+              v-model="text"
               :error="error"
               :interim="interim"
-              :lines="lines"
               @download="download"
             />
           </v-tabs-window-item>
@@ -95,7 +95,7 @@
   const screenshot = ref('')
 
   const { cameras, selected, video, listCameras, startCamera, capture } = useCamera()
-  const { lines, text, addLine, setLines, download } = useTranscript()
+  const { text, addLine, setText, download } = useTranscript()
   const { interim, error, start, stop } = useRecognition(addLine)
 
   watch(error, message_ => {
@@ -132,7 +132,7 @@
 
   function onTranscribed (transcribed: string[], name: string) {
     stop()
-    setLines(transcribed)
+    setText(transcribed.join('\n'))
     tab.value = 'transcript'
     dialog.value = false
     status.value = `Loaded ${transcribed.length} lines from ${name}.`

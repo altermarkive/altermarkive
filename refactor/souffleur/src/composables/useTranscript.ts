@@ -2,26 +2,26 @@
  * composables/useTranscript.ts
  *
  * The transcript with one line per utterance, newest last.
- * Transcript is held in memory and offered as a download.
+ * Held in memory, editable in place, and offered as a download.
  */
 
 import { computed, ref } from 'vue'
 
 export function useTranscript () {
-  const lines = ref<string[]>([])
+  const text = ref('')
 
-  const text = computed(() => lines.value.join('\n'))
+  const isEmpty = computed(() => text.value.trim().length === 0)
 
   function addLine (line: string) {
-    lines.value.push(line)
+    text.value = text.value ? `${text.value}\n${line}` : line
   }
 
-  function setLines (replacement: string[]) {
-    lines.value = replacement
+  function setText (replacement: string) {
+    text.value = replacement
   }
 
   function clear () {
-    lines.value = []
+    text.value = ''
   }
 
   function download () {
@@ -34,5 +34,5 @@ export function useTranscript () {
     URL.revokeObjectURL(url)
   }
 
-  return { lines, text, addLine, setLines, clear, download }
+  return { text, isEmpty, addLine, setText, clear, download }
 }

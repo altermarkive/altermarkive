@@ -2,7 +2,7 @@
   <div class="flex flex-col h-full gap-3">
     <div>
       <v-btn
-        :disabled="lines.length === 0"
+        :disabled="isEmpty"
         prepend-icon="mdi-download"
         size="small"
         text="Download transcript"
@@ -11,42 +11,59 @@
       />
     </div>
 
-    <pre class="pane">{{ body }}</pre>
+    <textarea
+      ref="area"
+      v-model="text"
+      class="pane"
+      :placeholder="error || 'No speech yet.'"
+      spellcheck="false"
+    />
+
+    <div v-if="interim" class="text-xs opacity-60">{{ interim }}</div>
   </div>
 </template>
 
 <script lang="ts" setup>
-  import { computed } from 'vue'
+  import { computed, nextTick, useTemplateRef, watch } from 'vue'
 
-  const { error, interim, lines } = defineProps<{
-    lines: string[]
+  const { error, interim } = defineProps<{
     interim: string
     error: string
   }>()
 
+  const text = defineModel<string>({ required: true })
+
   const emit = defineEmits<{ download: [] }>()
 
-  const body = computed(() => {
-    const settled = lines.join('\n')
-    if (interim) {
-      return settled ? `${settled}\n${interim}` : interim
+  const area = useTemplateRef<HTMLTextAreaElement>('area')
+
+  const isEmpty = computed(() => text.value.trim().length === 0)
+
+  // Recognition appends while the user may be typing; rewriting the textarea
+  // value drops the caret to the end, so put it back where it was.
+  watch(text, async () => {
+    const element = area.value
+    if (!element || document.activeElement !== element) {
+      return
     }
-    if (settled) {
-      return settled
-    }
-    // With nothing transcribed, a recogniser error is the useful thing to show:
-    // otherwise a dead recogniser is indistinguishable from silence.
-    return error || 'No speech yet.'
+    const { selectionStart, selectionEnd } = element
+    await nextTick()
+    element.setSelectionRange(selectionStart, selectionEnd)
   })
 </script>
 
 <style scoped>
 .pane {
-  white-space: pre-wrap;
+  font-family: inherit;
   font-size: 9pt;
-  margin: 0;
   flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  white-space: pre-wrap;
 }
 </style>
