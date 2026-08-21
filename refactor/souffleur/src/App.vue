@@ -10,10 +10,9 @@
             class="w-60 min-w-0"
             density="compact"
             hide-details
-            item-title="label"
-            item-value="deviceId"
             :items="cameras"
             label="Camera"
+            @update:menu="onCameraMenu"
             @update:model-value="onCameraChange"
           />
 
@@ -106,16 +105,28 @@
   })
 
   async function onRecord () {
-    status.value = 'Microphone starting...'
-    start()
-    status.value = 'Listening.'
+    // Camera first: iOS Safari ties getUserMedia to the user gesture, and the
+    // speech-recognition prompt can consume it.
+    let cameraError = ''
     try {
-      // Priming the camera before the first Capture:
-      // the permission prompt and the device labels both need a live stream.
       await startCamera()
-      await listCameras()
     } catch (error_) {
-      status.value = `Camera unavailable due to ${message(error_)}`
+      cameraError = `Camera unavailable due to ${message(error_)}`
+    }
+    // Always enumerate, even when the camera failed - labels and deviceIds only
+    // appear once permission is granted, and skipping this left the picker
+    // permanently empty with no way to refresh it.
+    try {
+      await listCameras()
+    } catch { /* enumeration is best-effort */ }
+
+    start()
+    status.value = cameraError || 'Listening.'
+  }
+
+  async function onCameraMenu (open: boolean) {
+    if (open) {
+      await listCameras().catch(() => {})
     }
   }
 

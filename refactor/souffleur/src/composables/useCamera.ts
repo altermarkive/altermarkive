@@ -2,10 +2,11 @@
  * composables/useCamera.ts
  *
  * Camera enumeration, preview and still capture.
- * The base64 goes straight into the Anthropic request.
+ * The capture goes straight into the Anthropic request rather than being
+ * POSTed to /screenshot for the server to hold.
  */
 
-import { ref, shallowRef } from 'vue'
+import { onScopeDispose, ref, shallowRef } from 'vue'
 
 export interface Capture {
   base64: string
@@ -14,21 +15,33 @@ export interface Capture {
   bytes: number
 }
 
+export interface CameraOption {
+  title: string
+  value: string
+}
+
 const MEDIA_TYPE = 'image/jpeg'
 const QUALITY = 0.9
 
 export function useCamera () {
-  const cameras = ref<MediaDeviceInfo[]>([])
+  const cameras = ref<CameraOption[]>([])
   const selected = ref('')
   const video = ref<HTMLVideoElement>()
 
   const stream = shallowRef<MediaStream>()
 
+  // Labels are empty until camera permission is granted, and Safari drops them
+  // again on reload - without a fallback the picker renders blank rows.
   async function listCameras () {
     const devices = await navigator.mediaDevices.enumerateDevices()
-    cameras.value = devices.filter(device => device.kind === 'videoinput')
-    if (!selected.value) {
-      selected.value = cameras.value[0]?.deviceId ?? ''
+    cameras.value = devices
+      .filter(device => device.kind === 'videoinput')
+      .map((device, index) => ({
+        title: device.label || `Camera ${index + 1}`,
+        value: device.deviceId,
+      }))
+    if (!cameras.value.some(camera => camera.value === selected.value)) {
+      selected.value = cameras.value[0]?.value ?? ''
     }
   }
 
@@ -36,14 +49,28 @@ export function useCamera () {
     for (const track of stream.value?.getTracks() ?? []) {
       track.stop()
     }
-    stream.value = await navigator.mediaDevices.getUserMedia({
-      video: selected.value ? { deviceId: { exact: selected.value } } : true,
-    })
+    stream.value = undefined
+    try {
+      stream.value = await navigator.mediaDevices.getUserMedia({
+        video: selected.value ? { deviceId: { exact: selected.value } } : true,
+      })
+    } catch (error) {
+      // Safari reissues deviceIds across reloads, so a remembered one can name
+      // a device that no longer exists; fall back to whatever camera there is.
+      if (!selected.value) {
+        throw error
+      }
+      selected.value = ''
+      stream.value = await navigator.mediaDevices.getUserMedia({ video: true })
+    }
     const element = video.value
     if (element) {
       element.srcObject = stream.value
       await element.play()
     }
+    // Labels become readable only once a stream exists, so relist here to turn
+    // the "Camera N" placeholders into real device names.
+    await listCameras()
   }
 
   async function capture (): Promise<Capture | undefined> {
@@ -67,8 +94,7 @@ export function useCamera () {
       return undefined
     }
 
-    const buffer = await blob.arrayBuffer()
-    const bytes = new Uint8Array(buffer)
+    const bytes = new Uint8Array(await blob.arrayBuffer())
     let binary = ''
     for (const byte of bytes) {
       binary += String.fromCodePoint(byte)
@@ -88,6 +114,14 @@ export function useCamera () {
     }
     stream.value = undefined
   }
+
+  const onDeviceChange = () => {
+    listCameras()
+  }
+  navigator.mediaDevices?.addEventListener('devicechange', onDeviceChange)
+  onScopeDispose(() => {
+    navigator.mediaDevices?.removeEventListener('devicechange', onDeviceChange)
+  })
 
   return { cameras, selected, video, listCameras, startCamera, capture, stopCamera }
 }
