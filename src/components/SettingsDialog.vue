@@ -67,6 +67,8 @@
       </v-card-text>
 
       <v-card-actions>
+        <v-btn :disabled="busy" text="Cancel" variant="text" @click="cancel" />
+
         <v-spacer />
 
         <v-btn
@@ -161,6 +163,10 @@
       model.value = stored.model
     }
   })
+
+  function cancel () {
+    open.value = false
+  }
 
   function record () {
     saveSettings({ apiKey: apiKey.value, model: model.value })
