@@ -2,9 +2,18 @@
 name: souffleur
 on:
   push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
 jobs:
-  web:
-    name: Web
+  build:
+    name: Build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -22,46 +31,25 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: refactor/souffleur/pnpm-lock.yaml
+      - name: Pages
+        uses: actions/configure-pages@v6.0.0
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Lint
         run: pnpm lint
-      # `build` runs type-check and build-only in parallel via run-p.
       - name: Build
         run: pnpm build
-  pipeline:
-    name: Pipeline
+      - name: Upload
+        uses: actions/upload-pages-artifact@v5.0.0
+        with:
+          path: refactor/souffleur/dist
+  deploy:
+    name: Deploy
+    needs: build
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.1
-      - name: Tags
-        id: tags
-        run: |
-          DOCKER_IMAGE='ghcr.io/${{ github.repository_owner }}/souffleur'
-          TAGS="${DOCKER_IMAGE}:latest,${DOCKER_IMAGE}:$(date +%Y%m%d%H%M%S)"
-          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
-      - name: QEMU
-        uses: docker/setup-qemu-action@v4.2.0
-      - name: Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@v4.2.0
-      - name: Login
-        uses: docker/login-action@v4.6.0
-        with:
-          username: ${{ github.repository_owner }}
-          password: ${{ github.token }}
-          registry: ghcr.io
-      - name: Build
-        uses: docker/build-push-action@v7.3.0
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64
-          tags: ${{ steps.tags.outputs.tags }}
-      - name: Trash
-        uses: actions/delete-package-versions@v5
-        with:
-          min-versions-to-keep: 20
-          package-name: souffleur
-          package-type: container
+      - name: Deploy
+        uses: actions/deploy-pages@v5.0.0

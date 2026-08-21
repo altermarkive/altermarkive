@@ -3,9 +3,9 @@
 @import "tailwindcss/utilities" layer(tailwind-utilities);
 
 @theme {
-  --font-heading: "Roboto", sans-serif;
-  --font-body: "Roboto", sans-serif;
-  --font-mono: "Roboto Mono", monospace;
+  --font-heading: "JetBrains Mono Variable", ui-monospace, monospace;
+  --font-body: "JetBrains Mono Variable", ui-monospace, monospace;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
 
   --color-background: rgb(var(--v-theme-background));
   --color-surface: rgb(var(--v-theme-surface));
@@ -34,9 +34,7 @@
 @source inline('font-body');
 @source inline('font-mono');
 
-/*
-  note: adopt and extend values from TailwindCSS
-*/
+/* note: adopt and extend values from TailwindCSS */
 @utility rounded-pill   { border-radius: 9999px }
 @utility rounded-circle { border-radius: 50%    }
 @utility rounded-shaped { border-radius: 24px 0 }

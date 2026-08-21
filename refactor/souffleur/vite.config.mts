@@ -7,6 +7,7 @@ import Vuetify, { transformAssetUrls } from 'vite-plugin-vuetify'
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  base: '/souffleur/',
   plugins: [
     tailwindcss(),
     Vue({
@@ -22,15 +23,8 @@ export default defineConfig({
     Fonts({
       fontsource: {
         families: [
-          {
-            name: 'Roboto Mono',
-            weights: [400, 700],
-          },
-          {
-            name: 'Roboto',
-            weights: [100, 300, 400, 500, 700, 900],
-            styles: ['normal', 'italic'],
-          },
+          // Requires the `@fontsource-variable/jetbrains-mono` package.
+          'JetBrains Mono Variable',
         ],
       },
     }),
