@@ -15,6 +15,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@huggingface/transformers": "^4.2.0",
     "@mdi/font": "7.4.47",
     "vue": "^3.5.30",
     "vuetify": "^4.0.2"

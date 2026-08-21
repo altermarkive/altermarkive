@@ -1,7 +1,7 @@
 /**
  * composables/useTranscript.ts
  *
- * One line per utterance, newest last.
+ * The transcript with one line per utterance, newest last.
  * Transcript is held in memory and offered as a download.
  */
 
@@ -14,6 +14,10 @@ export function useTranscript () {
 
   function addLine (line: string) {
     lines.value.push(line)
+  }
+
+  function setLines (replacement: string[]) {
+    lines.value = replacement
   }
 
   function clear () {
@@ -30,5 +34,5 @@ export function useTranscript () {
     URL.revokeObjectURL(url)
   }
 
-  return { lines, text, addLine, clear, download }
+  return { lines, text, addLine, setLines, clear, download }
 }

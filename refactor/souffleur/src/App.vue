@@ -70,7 +70,7 @@
       </div>
     </v-main>
 
-    <SettingsDialog v-model="dialog" @record="onRecord" />
+    <SettingsDialog v-model="dialog" @record="onRecord" @transcribed="onTranscribed" />
   </v-app>
 </template>
 
@@ -96,8 +96,8 @@
   const screenshot = ref('')
 
   const { cameras, selected, video, listCameras, startCamera, capture } = useCamera()
-  const { lines, text, addLine, download } = useTranscript()
-  const { interim, error, start } = useRecognition(addLine)
+  const { lines, text, addLine, setLines, download } = useTranscript()
+  const { interim, error, start, stop } = useRecognition(addLine)
 
   watch(error, message_ => {
     if (message_) {
@@ -117,6 +117,14 @@
     } catch (error_) {
       status.value = `Camera unavailable due to ${message(error_)}`
     }
+  }
+
+  function onTranscribed (transcribed: string[], name: string) {
+    stop()
+    setLines(transcribed)
+    tab.value = 'transcript'
+    dialog.value = false
+    status.value = `Loaded ${transcribed.length} lines from ${name}.`
   }
 
   async function onCameraChange () {
