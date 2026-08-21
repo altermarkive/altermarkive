@@ -30,8 +30,6 @@
 
         <div class="mt-6 text-xs opacity-70">
           Audio inputs seen by this browser: {{ audioInputs.join(', ') || 'none' }}.
-          Speech recognition always uses the system default and cannot be pointed
-          at a specific one.
         </div>
 
         <v-divider class="mt-6" />
