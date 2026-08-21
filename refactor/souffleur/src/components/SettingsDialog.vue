@@ -68,7 +68,6 @@
         <v-btn
           :disabled="busy"
           :loading="busy"
-          prepend-icon="mdi-file-music-outline"
           text="Upload recording"
           variant="tonal"
           @click="picker?.click()"
