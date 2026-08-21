@@ -28,6 +28,12 @@
           variant="tonal"
         />
 
+        <div class="mt-6 text-xs opacity-70">
+          Audio inputs seen by this browser: {{ audioInputs.join(', ') || 'none' }}.
+          Speech recognition always uses the system default and cannot be pointed
+          at a specific one.
+        </div>
+
         <v-divider class="mt-6" />
 
         <div class="mt-6">
@@ -126,12 +132,32 @@
   const unavailable = recognitionUnavailable()
   const reveal = ref(false)
 
+  // Diagnostic: which microphones the platform reports. Labels stay empty until
+  // permission is granted, so fall back to a count that is still informative.
+  const audioInputs = ref<string[]>([])
+
+  async function listAudioInputs () {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices()
+      audioInputs.value = devices
+        .filter(device => device.kind === 'audioinput')
+        .map((device, index) => device.label || `Microphone ${index + 1}`)
+    } catch {
+      audioInputs.value = []
+    }
+  }
+
   const settings = loadSettings()
   const apiKey = ref(settings.apiKey)
   const model = ref(settings.model)
 
+  // The dialog is already open at mount, so the watcher never fires for the
+  // first showing.
+  listAudioInputs()
+
   watch(open, isOpen => {
     if (isOpen) {
+      listAudioInputs()
       const stored = loadSettings()
       apiKey.value = stored.apiKey
       model.value = stored.model
