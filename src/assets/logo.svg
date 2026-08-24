@@ -1,6 +1,7 @@
-<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
-<path d="M261.126 140.65L164.624 307.732L256.001 466L377.028 256.5L498.001 47H315.192L261.126 140.65Z" fill="#1697F6"/>
-<path d="M135.027 256.5L141.365 267.518L231.64 111.178L268.731 47H256H14L135.027 256.5Z" fill="#AEDDFF"/>
-<path d="M315.191 47C360.935 197.446 256 466 256 466L164.624 307.732L315.191 47Z" fill="#1867C0"/>
-<path d="M268.731 47C76.0026 47 141.366 267.518 141.366 267.518L268.731 47Z" fill="#7BC6FF"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Souffleur">
+  <rect width="64" height="64" rx="14" fill="#141413"/>
+  <!-- hood, floor, tail: one S -->
+  <path d="M45.02 21.07 A17 17 0 0 0 15 32 L49 32 A17 17 0 0 1 18.98 42.93" fill="none" stroke="#D97757" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- the prompter: same centre as the arches -->
+  <path d="M21.5 32 A10.5 10.5 0 0 1 42.5 32 Z" fill="#D97757"/>
 </svg>
