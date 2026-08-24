@@ -28,6 +28,13 @@ utterance.
 Because that API is unreliable in the field, the composable restarts on every `end`,
 keeps a 10s watchdog for the silent-death case, and backs off exponentially
 (`RESTART_DELAY_MS` → `MAX_RESTART_DELAY_MS`) so a hard failure cannot spin.
+A restart is lossy, since the mic is not captured until the next instance starts, so
+a session that ended healthy (`failures === 0`) waits only `HEALTHY_RESTART_DELAY_MS`.
+Browsers cap session length even mid-utterance, so `end` also commits any pending
+interim text: no final result was delivered for those words, and the `result` handler
+clears `interim` whenever it commits a final one, so this cannot duplicate a line.
+`start()` throwing is its own restart path - an instance that never started fires no
+events, so nothing else would come back around.
 `recognitionUnavailable()` detects plain Chromium by User-Agent brands: such builds
 ship without Google's API keys, so the constructor exists and the mic opens but every
 attempt ends `audiostart → audioend → error: network`.

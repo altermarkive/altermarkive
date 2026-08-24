@@ -18,6 +18,12 @@ const WATCHDOG_MS = 10_000
 // Floor between restarts, so a hard failure cannot spin.
 const RESTART_DELAY_MS = 400
 
+// Gap after a healthy session ends of its own accord - the browser caps session
+// length even mid-utterance, and the microphone is not captured until the next
+// instance starts, so this is audio the transcript loses. Short enough to cost a
+// fraction of a word, long enough to yield the browser a turn to release the mic.
+const HEALTHY_RESTART_DELAY_MS = 100
+
 // Ceiling for the backoff. A recogniser that keeps failing - no microphone, or
 // no network, which iOS speech recognition needs - would otherwise restart as
 // fast as the browser tears it down, several times a second.
@@ -136,21 +142,34 @@ export function useRecognition (onLine: (text: string) => void) {
     })
 
     instance.addEventListener('end', () => {
+      if (interim.value) {
+        onLine(interim.value)
+      }
       interim.value = ''
       clearWatchdog()
       if (!active) {
         listening.value = false
         return
       }
-      const delay = Math.min(RESTART_DELAY_MS * 2 ** failures, MAX_RESTART_DELAY_MS)
-      restart = setTimeout(() => {
-        if (active) {
-          launch()
-        }
-      }, delay)
+      scheduleRestart()
     })
 
     return instance
+  }
+
+  function scheduleRestart () {
+    if (restart !== undefined) {
+      clearTimeout(restart)
+    }
+    const delay = failures === 0
+      ? HEALTHY_RESTART_DELAY_MS
+      : Math.min(RESTART_DELAY_MS * 2 ** failures, MAX_RESTART_DELAY_MS)
+    restart = setTimeout(() => {
+      restart = undefined
+      if (active) {
+        launch()
+      }
+    }, delay)
   }
 
   function launch () {
@@ -166,9 +185,9 @@ export function useRecognition (onLine: (text: string) => void) {
       listening.value = true
       armWatchdog()
     } catch {
-      // `start` throws if the previous instance has not fully released the
-      // microphone yet; the `end` handler will come back around.
       listening.value = false
+      failures += 1
+      scheduleRestart()
     }
   }
 
@@ -190,7 +209,6 @@ export function useRecognition (onLine: (text: string) => void) {
     }
     recognition.value?.stop()
     listening.value = false
-    interim.value = ''
   }
 
   return { listening, interim, error, start, stop }
