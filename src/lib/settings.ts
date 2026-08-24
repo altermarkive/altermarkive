@@ -1,10 +1,10 @@
 /**
  * lib/settings.ts
  *
- * The Anthropic API key and solving model.
+ * The API key (Anthropic or OpenAI) and solving model.
  */
 
-import { DEFAULT_MODEL } from '@/lib/anthropic'
+import { resolveModel } from '@/lib/solver'
 
 const API_KEY_STORAGE = 'souffleur.apiKey'
 const MODEL_STORAGE = 'souffleur.model'
@@ -15,9 +15,10 @@ export interface Settings {
 }
 
 export function loadSettings (): Settings {
+  const apiKey = localStorage.getItem(API_KEY_STORAGE) ?? ''
   return {
-    apiKey: localStorage.getItem(API_KEY_STORAGE) ?? '',
-    model: localStorage.getItem(MODEL_STORAGE) ?? DEFAULT_MODEL,
+    apiKey,
+    model: resolveModel(apiKey, localStorage.getItem(MODEL_STORAGE) ?? ''),
   }
 }
 

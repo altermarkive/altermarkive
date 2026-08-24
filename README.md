@@ -2,7 +2,7 @@
 
 Proof-of-concept for use when practicing interviews or exams - [try it out](https://marek-burza.github.io/souffleur/) (deployed as a static site on GitHub Pages)!
 
-The Anthropic API key is entered in a dialog and kept in `LocalStorage`.
+An Anthropic or OpenAI API key is entered in a dialog and kept in `LocalStorage`.
 
 ## 🏛️ Architecture
 
@@ -12,9 +12,35 @@ plain values down; the child components hold no session state.
 ```text
 useRecognition(addLine) ──> useTranscript ──> TranscriptPane (editable textarea)
 useCamera ──> CameraPreview + capture() ──┐
-                                          ├─> lib/anthropic solve() ──> AnswerPane
+                                          ├─> lib/solver solve() ──> AnswerPane
 SettingsDialog (key, model, file upload) ─┘
 ```
+
+### 🔑 Providers
+
+`src/lib/solver.ts` talks to both providers through LangChain, and the key picks
+which one: `sk-ant-` means `ChatAnthropic`, anything else `ChatOpenAI`. There is
+deliberately no provider toggle, since a toggle can disagree with the key. The
+model dropdown follows the same inference, and `resolveModel()` drops a stored
+model that belongs to the other provider (so replacing the key cannot leave a
+model name the new provider would reject).
+
+Calling either API from a page means acknowledging it, and each SDK spells that
+differently: `clientOptions: { dangerouslyAllowBrowser: true }` for Anthropic,
+`configuration: { dangerouslyAllowBrowser: true }` for OpenAI. LangChain forwards
+both verbatim to the underlying client constructor. Nothing about this is a
+proxy - the build stays a static site.
+
+Both effort controls are native LangChain constructor fields, not passthrough
+kwargs: `thinking: { type: 'adaptive' }` with `outputConfig: { effort }` on
+`ChatAnthropic`, and `reasoning: { effort }` on `ChatOpenAI` (the flat
+`reasoningEffort` is deprecated in favour of it). They reach the wire as
+`thinking` + `output_config` and as `reasoning_effort` respectively. Note that
+`reasoning.effort` alone does **not** move OpenAI onto the Responses API:
+`_useResponsesApi()` switches only on `reasoning.summary`, built-in or custom
+tools, or a model name matching its `-pro`/`codex` list. `gpt-5.6-*` therefore
+goes to `/v1/chat/completions`, which is fine - `maxTokens` becomes
+`max_completion_tokens` there.
 
 ### 🛣️ Transcription Paths
 
@@ -192,6 +218,13 @@ if the exemption is genuinely justified.
 (`@parcel/watcher`, `onnxruntime-node`, `protobufjs`, `sharp`) that a browser build
 never loads. pnpm 11 treats an unapproved install script as a hard error, so a new
 dependency with a postinstall must be added to that map explicitly.
+
+The three `@langchain/*` packages release several times a week, so the version
+ranges in `package.json` are floored at the newest release that was already a week
+old when they were added. `@anthropic-ai/sdk` is no longer a direct dependency:
+`@langchain/anthropic` pins its own (`^0.115.0`, which under a `0.x` caret means
+`0.115.x` and not the `0.117` this project used to carry), and `@langchain/openai`
+brings `openai` the same way. None of the five has an install script.
 
 ## 🚦 CI
 

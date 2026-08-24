@@ -6,8 +6,8 @@
           v-model="apiKey"
           :append-inner-icon="reveal ? 'mdi-eye-off' : 'mdi-eye'"
           autocomplete="off"
-          hint="Stored in this browser's LocalStorage and sent directly to the Anthropic API."
-          label="Anthropic API key"
+          :hint="keyHint"
+          label="Anthropic or OpenAI API key"
           persistent-hint
           :type="reveal ? 'text' : 'password'"
           @click:append-inner="reveal = !reveal"
@@ -16,7 +16,7 @@
         <v-select
           v-model="model"
           class="mt-6"
-          :items="MODELS"
+          :items="models"
           label="Solve model"
         />
 
@@ -86,10 +86,10 @@
 </template>
 
 <script lang="ts" setup>
-  import { ref, useTemplateRef, watch } from 'vue'
+  import { computed, ref, useTemplateRef, watch } from 'vue'
   import { recognitionUnavailable } from '@/composables/useRecognition'
-  import { MODELS } from '@/lib/anthropic'
   import { loadSettings, saveSettings } from '@/lib/settings'
+  import { MODELS, PROVIDER_TITLES, providerOf, resolveModel } from '@/lib/solver'
   import { MODEL_DOWNLOAD_MB, type Progress, transcribeFile } from '@/lib/transcribeFile'
 
   const open = defineModel<boolean>({ required: true })
@@ -132,8 +132,6 @@
   const unavailable = recognitionUnavailable()
   const reveal = ref(false)
 
-  // Diagnostic: which microphones the platform reports. Labels stay empty until
-  // permission is granted, so fall back to a count that is still informative.
   const audioInputs = ref<string[]>([])
 
   async function listAudioInputs () {
@@ -150,6 +148,18 @@
   const settings = loadSettings()
   const apiKey = ref(settings.apiKey)
   const model = ref(settings.model)
+
+  const provider = computed(() => providerOf(apiKey.value))
+  const models = computed(() => MODELS[provider.value])
+
+  const keyHint = computed(() => {
+    const title = PROVIDER_TITLES[provider.value]
+    return `Stored in this browser's LocalStorage and sent directly to ${title}. Keys beginning "sk-ant-" go to Anthropic, all others to OpenAI.`
+  })
+
+  watch(provider, () => {
+    model.value = resolveModel(apiKey.value, model.value)
+  })
 
   // The dialog is already open at mount, so the watcher never fires for the
   // first showing.

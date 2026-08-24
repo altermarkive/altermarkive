@@ -82,8 +82,8 @@
   import { useCamera } from '@/composables/useCamera'
   import { useRecognition } from '@/composables/useRecognition'
   import { useTranscript } from '@/composables/useTranscript'
-  import { type Answer, createClient, solve } from '@/lib/anthropic'
   import { loadSettings } from '@/lib/settings'
+  import { type Answer, createModel, solve } from '@/lib/solver'
 
   const dialog = ref(true)
   const tab = ref('answer')
@@ -175,7 +175,7 @@
     answer.value = undefined
     answerStatus.value = 'Solving...'
     try {
-      answer.value = await solve(createClient(apiKey), model, text.value, screenshot.value)
+      answer.value = await solve(createModel(apiKey, model), text.value, screenshot.value)
     } catch (error_) {
       answerStatus.value = `Failed due to ${message(error_)}`
     } finally {

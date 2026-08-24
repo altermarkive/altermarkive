@@ -3,7 +3,7 @@
 </template>
 
 <script lang="ts" setup>
-  import type { Answer } from '@/lib/anthropic'
+  import type { Answer } from '@/lib/solver'
   import { computed } from 'vue'
 
   const { answer, status } = defineProps<{

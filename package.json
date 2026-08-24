@@ -14,9 +14,11 @@
     "lint:fix": "eslint --fix"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.117.1",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@huggingface/transformers": "^4.2.0",
+    "@langchain/anthropic": "^1.5.6",
+    "@langchain/core": "^1.2.8",
+    "@langchain/openai": "^1.5.8",
     "@mdi/font": "7.4.47",
     "vue": "^3.5.30",
     "vuetify": "^4.0.2"
