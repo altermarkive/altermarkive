@@ -40,6 +40,12 @@ export function isFileTranscriptionSupported (): boolean {
   return typeof AudioContext !== 'undefined'
 }
 
+export function isChrome (): boolean {
+  return navigator.userAgentData?.brands.some(
+    ({ brand }) => brand === 'Google Chrome',
+  ) ?? false
+}
+
 export function hasWebGPU (): boolean {
   return 'gpu' in navigator
 }
