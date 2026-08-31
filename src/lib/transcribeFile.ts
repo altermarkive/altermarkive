@@ -7,19 +7,21 @@
  * site, and Transformers.js caches them in the browser after the first run.
  */
 
+import type {
+  AutomaticSpeechRecognitionPipeline,
+  pipeline as Pipeline,
+} from '@huggingface/transformers'
 import { decodeToMono16k } from '@/lib/audio'
 
-// whisper-small.en: English-only, so no language token to get wrong, and small
-// enough that the encoder can stay unquantised.
-const MODEL = 'onnx-community/whisper-small.en'
+// whisper-base.en: English-only, so no language token to get wrong.
+const MODEL = 'onnx-community/whisper-base.en'
 
-// fp32 encoder, q4 decoder. At this size the fp32 encoder is a single 353 MB file,
-// and keeping it unquantised is where the accuracy of a small model is
-// won back.
+// fp32 encoder, q4 decoder. At this size fp32 costs 82 MB, so the accuracy of a
+// small model is worth keeping rather than quantising away.
 const DTYPE = { encoder_model: 'fp32', decoder_model_merged: 'q4' } as const
 
 // Combined size of the two files, for the warning in the dialog.
-export const MODEL_DOWNLOAD_MB = 559
+export const MODEL_DOWNLOAD_MB = 197
 
 // Plain Whisper is trained on a 30 s window, and the
 // stride is the usual chunk/6 of overlap on each side.
@@ -42,18 +44,11 @@ export function hasWebGPU (): boolean {
   return 'gpu' in navigator
 }
 
-export async function transcribeFile (
-  file: File,
+async function loadTranscriber (
+  pipeline: typeof Pipeline,
   onProgress: (progress: Progress) => void,
-): Promise<string[]> {
-  onProgress({ ratio: -1, detail: 'Decoding audio...' })
-  const audio = await decodeToMono16k(file)
-
-  const { pipeline } = await import('@huggingface/transformers')
-  const webgpu = hasWebGPU()
-
-  const transcriber = await pipeline('automatic-speech-recognition', MODEL, {
-    device: webgpu ? 'webgpu' : 'wasm',
+): Promise<[AutomaticSpeechRecognitionPipeline, boolean]> {
+  const options = {
     dtype: DTYPE,
     progress_callback: (event: { status: string, progress?: number, file?: string }) => {
       if (event.status === 'progress' && event.progress !== undefined) {
@@ -63,7 +58,37 @@ export async function transcribeFile (
         })
       }
     },
+  }
+
+  if (hasWebGPU()) {
+    try {
+      const transcriber = await pipeline('automatic-speech-recognition', MODEL, {
+        ...options,
+        device: 'webgpu',
+      })
+      return [transcriber as AutomaticSpeechRecognitionPipeline, true]
+    } catch (error) {
+      console.warn('WebGPU unavailable to the ONNX runtime, falling back to CPU', error)
+      onProgress({ ratio: -1, detail: 'GPU unavailable, retrying on CPU...' })
+    }
+  }
+
+  const transcriber = await pipeline('automatic-speech-recognition', MODEL, {
+    ...options,
+    device: 'wasm',
   })
+  return [transcriber as AutomaticSpeechRecognitionPipeline, false]
+}
+
+export async function transcribeFile (
+  file: File,
+  onProgress: (progress: Progress) => void,
+): Promise<string[]> {
+  onProgress({ ratio: -1, detail: 'Decoding audio...' })
+  const audio = await decodeToMono16k(file)
+
+  const { pipeline } = await import('@huggingface/transformers')
+  const [transcriber, webgpu] = await loadTranscriber(pipeline, onProgress)
 
   const minutes = Math.max(1, Math.round(audio.length / 16_000 / 60))
   onProgress({

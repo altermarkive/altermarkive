@@ -71,9 +71,9 @@ fallback. Notes that matter:
 
 - The `@huggingface/transformers` import is **dynamic** so the ~500 kB chunk and the
   22 MB ONNX Runtime WASM stay out of the initial load. Keep it that way.
-- The model is `onnx-community/whisper-small.en` with an `fp32` encoder and a
-  `q4` decoder, on WebGPU and WASM alike. At this size fp32 is a single 353 MB
-  file, and it is where a small model's accuracy is won back.
+- The model is `onnx-community/whisper-base.en` with an `fp32` encoder and a
+  `q4` decoder, on WebGPU and WASM alike. At that size fp32 is only 82 MB,
+  so the encoder stays unquantised.
 - `src/lib/audio.ts` decodes inside an `AudioContext({ sampleRate: 16000 })` so
   resampling happens *during* decode. An hour of 48 kHz stereo lands at ~440 MB
   instead of ~1.3 GB. Do not "simplify" this to a default AudioContext.
