@@ -9,6 +9,7 @@
 
 import type {
   AutomaticSpeechRecognitionPipeline,
+  env as TransformersEnvValue,
   pipeline as Pipeline,
 } from '@huggingface/transformers'
 import { decodeToMono16k } from '@/lib/audio'
@@ -36,16 +37,26 @@ export interface Progress {
 
 interface Chunk { text?: string }
 
+type TransformersEnv = typeof TransformersEnvValue
+
 export function isFileTranscriptionSupported (): boolean {
   return typeof AudioContext !== 'undefined'
 }
 
-export function hasWebGPU (): boolean {
-  return 'gpu' in navigator
+function webgpuUsable (env: TransformersEnv): boolean {
+  if (!('gpu' in navigator)) {
+    return false
+  }
+  const paths = env.backends?.onnx?.wasm?.wasmPaths
+  if (typeof paths !== 'object' || typeof paths.mjs !== 'string') {
+    return true
+  }
+  return paths.mjs.includes('asyncify') || paths.mjs.includes('jspi')
 }
 
 async function loadTranscriber (
   pipeline: typeof Pipeline,
+  env: TransformersEnv,
   onProgress: (progress: Progress) => void,
 ): Promise<[AutomaticSpeechRecognitionPipeline, boolean]> {
   const options = {
@@ -60,7 +71,7 @@ async function loadTranscriber (
     },
   }
 
-  if (hasWebGPU()) {
+  if (webgpuUsable(env)) {
     try {
       const transcriber = await pipeline('automatic-speech-recognition', MODEL, {
         ...options,
@@ -87,8 +98,8 @@ export async function transcribeFile (
   onProgress({ ratio: -1, detail: 'Decoding audio...' })
   const audio = await decodeToMono16k(file)
 
-  const { pipeline } = await import('@huggingface/transformers')
-  const [transcriber, webgpu] = await loadTranscriber(pipeline, onProgress)
+  const { env, pipeline } = await import('@huggingface/transformers')
+  const [transcriber, webgpu] = await loadTranscriber(pipeline, env, onProgress)
 
   const minutes = Math.max(1, Math.round(audio.length / 16_000 / 60))
   onProgress({

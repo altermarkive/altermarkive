@@ -74,6 +74,23 @@ fallback. Notes that matter:
 - The model is `onnx-community/whisper-base.en` with an `fp32` encoder and a
   `q4` decoder, on WebGPU and WASM alike. At that size fp32 is only 82 MB,
   so the encoder stays unquantised.
+- `navigator.gpu` is a browser capability, not an ONNX Runtime one, and the gap
+  between the two is a trap. The WebGPU execution provider is compiled only into
+  the `asyncify` and `jspi` runtime builds; Transformers.js deliberately points
+  Safari at the plain build (`backends/onnx.js`, the `IS_SAFARI` branch) to dodge
+  an Asyncify memory leak on Apple devices, so on iPad Safari `navigator.gpu`
+  exists but session creation throws `webgpuInit is not a function`.
+  `webgpuUsable()` therefore asks the *runtime* which build it loaded rather than
+  sniffing the user agent, which means it re-enables itself if upstream ever
+  lifts the carve-out.
+- **That has to be checked before the first session, not caught around it.**
+  Transformers.js chains every session creation onto one module-level promise
+  with no `.catch` (`backends/onnx.js`, `webInitChain`). One rejection poisons
+  that promise for the lifetime of the page: `rejected.then(load)` never runs
+  `load`, so every later attempt re-throws the *first* error. A try/catch that
+  retries on another device therefore reports the original WebGPU failure and
+  looks like the fallback silently never ran. Do not replace the up-front check
+  with a retry.
 - `src/lib/audio.ts` decodes inside an `AudioContext({ sampleRate: 16000 })` so
   resampling happens *during* decode. An hour of 48 kHz stereo lands at ~440 MB
   instead of ~1.3 GB. Do not "simplify" this to a default AudioContext.
