@@ -17,7 +17,8 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Dependabot PR - Approve and Auto-merge
-        if: steps.metadata.outputs.package-ecosystem == 'github_actions'
+        # Uncomment to restrict dependabot auto-merge to just GitHub Actions
+        # if: steps.metadata.outputs.package-ecosystem == 'github_actions' || steps.metadata.outputs.dependency-group == 'all-deps'
         # Note Go to Settings → General → Pull Requests and check "Allow auto-merge"
         run: |
           gh pr review "$PR_URL" --approve
