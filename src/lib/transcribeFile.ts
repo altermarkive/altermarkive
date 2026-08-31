@@ -9,8 +9,8 @@
 
 import type {
   AutomaticSpeechRecognitionPipeline,
-  env as TransformersEnvValue,
   pipeline as Pipeline,
+  env as TransformersEnvValue,
 } from '@huggingface/transformers'
 import { decodeToMono16k } from '@/lib/audio'
 
