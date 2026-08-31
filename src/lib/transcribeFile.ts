@@ -1,10 +1,7 @@
 /**
  * lib/transcribeFile.ts
  *
- * Offline transcription of an uploaded recording, using Whisper through
- * Transformers.js. This is the opposite trade to the live path: the Web Speech
- * API cannot be fed audio (its `start()` takes no MediaStreamTrack outside a
- * Chrome flag), and a file is not latency-critical, so a local model wins.
+ * Transcription using Whisper through Transformers.js.
  *
  * The model weights come from the Hugging Face CDN at runtime, not from this
  * site, and Transformers.js caches them in the browser after the first run.
@@ -12,20 +9,21 @@
 
 import { decodeToMono16k } from '@/lib/audio'
 
-// distil-large-v3.5: the maintained successor to distil-large-v3, and the one
-// with a Transformers.js ONNX build. Roughly whisper-large-v3 quality.
-const MODEL = 'onnx-community/distil-large-v3.5-ONNX'
+// whisper-small.en: English-only, so no language token to get wrong, and small
+// enough that the encoder can stay unquantised.
+const MODEL = 'onnx-community/whisper-small.en'
 
-// q4 for both halves: the fp32 encoder needs a 2.4 GB external-data file, and
-// fp16 needs `shader-f16`, which plenty of GPUs (including Ampere) lack.
-const WEBGPU_DTYPE = { encoder_model: 'q4', decoder_model_merged: 'q4' } as const
-const WASM_DTYPE = { encoder_model: 'q8', decoder_model_merged: 'q8' } as const
+// fp32 encoder, q4 decoder. At this size the fp32 encoder is a single 353 MB file,
+// and keeping it unquantised is where the accuracy of a small model is
+// won back.
+const DTYPE = { encoder_model: 'fp32', decoder_model_merged: 'q4' } as const
 
-// Combined size of the two q4 files, for the warning in the dialog.
-export const MODEL_DOWNLOAD_MB = 692
+// Combined size of the two files, for the warning in the dialog.
+export const MODEL_DOWNLOAD_MB = 559
 
-// distil-whisper is trained for a longer window than Whisper's 30 s.
-const CHUNK_LENGTH_S = 25
+// Plain Whisper is trained on a 30 s window, and the
+// stride is the usual chunk/6 of overlap on each side.
+const CHUNK_LENGTH_S = 30
 const STRIDE_LENGTH_S = 5
 
 export interface Progress {
@@ -38,12 +36,6 @@ interface Chunk { text?: string }
 
 export function isFileTranscriptionSupported (): boolean {
   return typeof AudioContext !== 'undefined'
-}
-
-export function isChrome (): boolean {
-  return navigator.userAgentData?.brands.some(
-    ({ brand }) => brand === 'Google Chrome',
-  ) ?? false
 }
 
 export function hasWebGPU (): boolean {
@@ -62,7 +54,7 @@ export async function transcribeFile (
 
   const transcriber = await pipeline('automatic-speech-recognition', MODEL, {
     device: webgpu ? 'webgpu' : 'wasm',
-    dtype: webgpu ? WEBGPU_DTYPE : WASM_DTYPE,
+    dtype: DTYPE,
     progress_callback: (event: { status: string, progress?: number, file?: string }) => {
       if (event.status === 'progress' && event.progress !== undefined) {
         onProgress({

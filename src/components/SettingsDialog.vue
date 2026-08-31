@@ -32,9 +32,9 @@
           Audio inputs seen by this browser: {{ audioInputs.join(', ') || 'none' }}.
         </div>
 
-        <v-divider v-if="chrome" class="mt-6" />
+        <v-divider class="mt-6" />
 
-        <div v-if="chrome" class="mt-6">
+        <div class="mt-6">
           <input
             ref="picker"
             accept="audio/mp4,audio/x-m4a,audio/mpeg,audio/wav,.m4a"
@@ -72,7 +72,6 @@
         <v-spacer />
 
         <v-btn
-          v-if="chrome"
           :disabled="busy"
           :loading="busy"
           text="Upload recording"
@@ -91,7 +90,7 @@
   import { recognitionUnavailable } from '@/composables/useRecognition'
   import { loadSettings, saveSettings } from '@/lib/settings'
   import { MODELS, PROVIDER_TITLES, providerOf, resolveModel } from '@/lib/solver'
-  import { isChrome, MODEL_DOWNLOAD_MB, type Progress, transcribeFile } from '@/lib/transcribeFile'
+  import { MODEL_DOWNLOAD_MB, type Progress, transcribeFile } from '@/lib/transcribeFile'
 
   const open = defineModel<boolean>({ required: true })
 
@@ -100,7 +99,6 @@
     transcribed: [lines: string[], name: string]
   }>()
 
-  const chrome = isChrome()
   const picker = useTemplateRef<HTMLInputElement>('picker')
   const busy = ref(false)
   const uploadError = ref('')
