@@ -59,6 +59,10 @@ a session that ended healthy (`failures === 0`) waits only `HEALTHY_RESTART_DELA
 Browsers cap session length even mid-utterance, so `end` also commits any pending
 interim text: no final result was delivered for those words, and the `result` handler
 clears `interim` whenever it commits a final one, so this cannot duplicate a line.
+That recovery is the *only* reason `interimResults` is on. Nothing displays a
+partial utterance - the pane gets a line once it is final - so `interim` is a plain
+local the composable does not return. Turning `interimResults` off would silently
+lose whatever a capped session was in the middle of hearing.
 `start()` throwing is its own restart path - an instance that never started fires no
 events, so nothing else would come back around.
 `recognitionUnavailable()` detects plain Chromium by User-Agent brands: such builds

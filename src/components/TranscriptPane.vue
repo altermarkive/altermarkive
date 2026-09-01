@@ -18,16 +18,13 @@
       :placeholder="error || 'No speech yet.'"
       spellcheck="false"
     />
-
-    <div v-if="interim" class="text-xs opacity-60">{{ interim }}</div>
   </div>
 </template>
 
 <script lang="ts" setup>
   import { computed, nextTick, useTemplateRef, watch } from 'vue'
 
-  const { error, interim } = defineProps<{
-    interim: string
+  const { error } = defineProps<{
     error: string
   }>()
 

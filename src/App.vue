@@ -61,7 +61,6 @@
             <TranscriptPane
               v-model="text"
               :error="error"
-              :interim="interim"
               @download="download"
             />
           </v-tabs-window-item>
@@ -96,7 +95,7 @@
 
   const { cameras, selected, video, listCameras, startCamera, capture } = useCamera()
   const { text, addLine, setText, download } = useTranscript()
-  const { interim, error, start, stop } = useRecognition(addLine)
+  const { error, start, stop } = useRecognition(addLine)
 
   watch(error, message_ => {
     if (message_) {

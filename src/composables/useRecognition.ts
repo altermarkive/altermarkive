@@ -70,8 +70,8 @@ export function recognitionUnavailable (): string {
 
 export function useRecognition (onLine: (text: string) => void) {
   const listening = ref(false)
-  const interim = ref('')
   const error = ref('')
+  let interim = ''
 
   const recognition = shallowRef<SpeechRecognition>()
   let active = false
@@ -125,7 +125,7 @@ export function useRecognition (onLine: (text: string) => void) {
           pending += `${text} `
         }
       }
-      interim.value = pending.trim()
+      interim = pending.trim()
     })
 
     instance.addEventListener('error', event => {
@@ -142,10 +142,10 @@ export function useRecognition (onLine: (text: string) => void) {
     })
 
     instance.addEventListener('end', () => {
-      if (interim.value) {
-        onLine(interim.value)
+      if (interim) {
+        onLine(interim)
       }
-      interim.value = ''
+      interim = ''
       clearWatchdog()
       if (!active) {
         listening.value = false
@@ -211,5 +211,5 @@ export function useRecognition (onLine: (text: string) => void) {
     listening.value = false
   }
 
-  return { listening, interim, error, start, stop }
+  return { listening, error, start, stop }
 }
