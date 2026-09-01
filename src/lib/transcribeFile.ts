@@ -14,15 +14,10 @@ import type {
 } from '@huggingface/transformers'
 import { decodeToMono16k } from '@/lib/audio'
 
-// whisper-base.en: English-only, so no language token to get wrong.
-const MODEL = 'onnx-community/whisper-base.en'
+const WEBGPU_MODEL = 'onnx-community/whisper-small.en'
+const WASM_MODEL = 'onnx-community/whisper-base.en'
 
-// fp32 encoder, q4 decoder. At this size fp32 costs 82 MB, so the accuracy of a
-// small model is worth keeping rather than quantising away.
 const DTYPE = { encoder_model: 'fp32', decoder_model_merged: 'q4' } as const
-
-// Combined size of the two files, for the warning in the dialog.
-export const MODEL_DOWNLOAD_MB = 197
 
 // Plain Whisper is trained on a 30 s window, and the
 // stride is the usual chunk/6 of overlap on each side.
@@ -73,7 +68,7 @@ async function loadTranscriber (
 
   if (webgpuUsable(env)) {
     try {
-      const transcriber = await pipeline('automatic-speech-recognition', MODEL, {
+      const transcriber = await pipeline('automatic-speech-recognition', WEBGPU_MODEL, {
         ...options,
         device: 'webgpu',
       })
@@ -84,7 +79,7 @@ async function loadTranscriber (
     }
   }
 
-  const transcriber = await pipeline('automatic-speech-recognition', MODEL, {
+  const transcriber = await pipeline('automatic-speech-recognition', WASM_MODEL, {
     ...options,
     device: 'wasm',
   })

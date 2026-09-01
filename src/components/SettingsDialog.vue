@@ -45,9 +45,8 @@
 
           <div class="text-xs opacity-70">
             Transcribes the file locally and loads it into the Transcript tab,
-            replacing what is there. First run downloads about
-            {{ MODEL_DOWNLOAD_MB }} MB of model weights from Hugging Face, then
-            caches them.
+            replacing what is there. First run downloads about model weights
+            from Hugging Face, then caches them.
           </div>
 
           <template v-if="busy">
@@ -90,7 +89,7 @@
   import { recognitionUnavailable } from '@/composables/useRecognition'
   import { loadSettings, saveSettings } from '@/lib/settings'
   import { MODELS, PROVIDER_TITLES, providerOf, resolveModel } from '@/lib/solver'
-  import { MODEL_DOWNLOAD_MB, type Progress, transcribeFile } from '@/lib/transcribeFile'
+  import { type Progress, transcribeFile } from '@/lib/transcribeFile'
 
   const open = defineModel<boolean>({ required: true })
 

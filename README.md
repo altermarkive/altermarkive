@@ -71,9 +71,16 @@ fallback. Notes that matter:
 
 - The `@huggingface/transformers` import is **dynamic** so the ~500 kB chunk and the
   22 MB ONNX Runtime WASM stay out of the initial load. Keep it that way.
-- The model is `onnx-community/whisper-base.en` with an `fp32` encoder and a
-  `q4` decoder, on WebGPU and WASM alike. At that size fp32 is only 82 MB,
-  so the encoder stays unquantised.
+- **One model per device type.** WebGPU gets `onnx-community/whisper-small.en`, WASM
+  gets `onnx-community/whisper-base.en`. The WASM path is single-threaded (see
+  cross-origin isolation below), and small.en's encoder is ~350 GFLOP per 30 s
+  window against base's ~90, so on CPU small runs 1.5-3x slower than real time
+  and base comfortably under it. Both are English-only, so neither needs a
+  language token, and both are plain Whisper, so both want the 30 s window
+  rather than distil-whisper's longer one.
+- Both use an `fp32` encoder (353 MB for small, 82 MB for base) and a `q4`
+  decoder. The encoder is where a Whisper model's accuracy lives, so it stays
+  unquantised.
 - `navigator.gpu` is a browser capability, not an ONNX Runtime one, and the gap
   between the two is a trap. The WebGPU execution provider is compiled only into
   the `asyncify` and `jspi` runtime builds; Transformers.js deliberately points
