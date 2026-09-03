@@ -27,17 +27,17 @@ import {
 } from '@/lib/whisper'
 
 /**
- * One step down from the file path's pair, because segments arrive continuously
- * here and decoding has to keep ahead of speech rather than merely finish.
+ * Smaller than the file path's pair, and for a different reason on each device:
+ * segments arrive continuously here, so decoding has to keep ahead of speech in
+ * real time rather than merely finish.
  *
- * Both devices get `base.en`. The single-threaded WASM fallback is the one to
- * watch: base's encoder is ~90 GFLOP per 30 s window, comfortably under real
- * time on a current iPad, but if the queue starts shedding segments (see
- * `MAX_PENDING`) then `tiny.en` is the lever, at a real cost in accuracy.
+ * `base.en` on the single-threaded WASM fallback was tried on an iPad and did
+ * not work, so that device keeps `tiny.en`. The accuracy is worse; the
+ * alternative on that hardware is no live transcript.
  */
 const MODELS: WhisperChoice = {
   webgpu: 'onnx-community/whisper-base.en',
-  wasm: 'onnx-community/whisper-base.en',
+  wasm: 'onnx-community/whisper-tiny.en',
 }
 
 /**

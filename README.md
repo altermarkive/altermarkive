@@ -117,15 +117,15 @@ Both local paths share `src/lib/whisper.ts` for loading. Notes that matter:
   22 MB ONNX Runtime WASM stay out of the initial load. Keep it that way.
 - **One model per device type, per path.** File upload gets
   `onnx-community/whisper-small.en` on WebGPU and `onnx-community/whisper-base.en`
-  on WASM; the universal live path uses base.en on both. The WASM path is
-  single-threaded (see cross-origin isolation below), and small.en's encoder is
-  ~350 GFLOP per 30 s window against base's ~90, so on CPU small runs 1.5-3x
-  slower than real time and base comfortably under it. That is survivable for a
-  file, which only has to finish, and fatal live, where decoding has to keep
-  ahead of speech. If base cannot keep up on some device - the symptom is the
-  live queue shedding segments past `MAX_PENDING` - `tiny.en` is the lever. All are
-  English-only, so none needs a language token, and all are plain Whisper, so all
-  want the 30 s window rather than distil-whisper's longer one.
+  on WASM; the universal live path steps both down, to base.en and tiny.en. The
+  WASM path is single-threaded (see cross-origin isolation below), and small.en's
+  encoder is ~350 GFLOP per 30 s window against base's ~90, so on CPU small runs
+  1.5-3x slower than real time and base comfortably under it. That is survivable
+  for a file, which only has to finish, and fatal live, where decoding has to keep
+  ahead of speech - hence tiny.en on the CPU fallback, which is not a guess:
+  base.en was tried there on an iPad and did not work. All four are English-only,
+  so none needs a language token, and all are plain Whisper, so all want the 30 s
+  window rather than distil-whisper's longer one.
 - Every variant uses an `fp32` encoder (353 MB for small, 82 MB for base), because
   the encoder is where a Whisper model's accuracy lives, and a `q4` decoder on
   **both** devices - the pairing Hugging Face's own WebGPU Whisper demos use.
