@@ -47,6 +47,10 @@ const MODELS: WhisperChoice = {
  */
 const MAX_PENDING = 4
 
+// How often the level readout in the status line is refreshed. Slow enough to
+// be readable, fast enough to show that the microphone is live.
+const LEVEL_INTERVAL_MS = 500
+
 export function useUniversalRecognition (onLine: (text: string) => void) {
   const listening = ref(false)
   const error = ref('')
@@ -58,6 +62,7 @@ export function useUniversalRecognition (onLine: (text: string) => void) {
 
   const vad = new VadAccumulator()
   const splitter = new FrameSplitter(vad.frameSamples)
+  let levelShownAt = 0
   const pending: Float32Array[] = []
   let draining: Promise<void> | undefined
   let dropped = 0
@@ -121,6 +126,7 @@ export function useUniversalRecognition (onLine: (text: string) => void) {
         ratio: -1,
         detail: `Listening on ${transcriber.value.webgpu ? 'GPU' : 'CPU'}.`,
       }
+      const device = transcriber.value.webgpu ? 'GPU' : 'CPU'
       microphone = await openMicrophone(block => {
         splitter.split(block, frame => {
           const segment = vad.feed(frame)
@@ -128,6 +134,7 @@ export function useUniversalRecognition (onLine: (text: string) => void) {
             enqueue(segment)
           }
         })
+        showLevel(device)
       })
       if (!active) {
         // Stopped while the permission prompt was up.
@@ -140,6 +147,26 @@ export function useUniversalRecognition (onLine: (text: string) => void) {
       active = false
       listening.value = false
       error.value = `Recording unavailable due to ${message(error_)}`
+    }
+  }
+
+  /**
+   * The VAD threshold follows the room, so it cannot be reasoned about from the
+   * transcript alone. Showing it alongside the current level is what makes the
+   * multiples and the window tunable against a real recording; drop this once
+   * they are settled. Held back while an error is showing, since that message
+   * matters more than the meter.
+   */
+  function showLevel (device: string) {
+    const now = Date.now()
+    if (error.value || now - levelShownAt < LEVEL_INTERVAL_MS) {
+      return
+    }
+    levelShownAt = now
+    progress.value = {
+      ratio: -1,
+      detail: `Listening on ${device}. Level ${vad.energy.toFixed(3)}, `
+        + `speech above ${vad.threshold.toFixed(3)}.`,
     }
   }
 

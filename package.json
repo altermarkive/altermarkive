@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "build-only": "vite build",
     "type-check": "vue-tsc --build --force",
+    "check:vad": "node scripts/vad-check.mts",
     "lint": "eslint",
     "lint:fix": "eslint --fix"
   },

@@ -31,6 +31,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Lint
         run: pnpm lint
+      - name: VAD
+        run: pnpm check:vad
       - name: Build
         run: pnpm build
       - name: Upload

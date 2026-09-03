@@ -79,28 +79,44 @@ attempt ends `audiostart → audioend → error: network`.
 above cannot run at all - plain Chromium, Firefox - and it needs nothing but a
 microphone. It captures the mic itself and transcribes on the device:
 
-- `src/lib/micStream.ts` is the `getUserMedia` + `AudioWorklet` capture, ported from
-  the pre-Vue page (`old/souffleur.html`, recoverable at `491e246^`), with the
-  WebSocket send replaced by a callback. Two details from it are load-bearing: the
-  worklet is published as a **blob URL** rather than a bundled asset, which sidesteps
-  `base: '/souffleur/'` entirely, and the worklet is connected through a zero-gain
-  node to `destination`, because a graph that reaches no destination is never pulled.
-  The `AudioContext` is fixed at 16 kHz so resampling happens in the graph and
-  nothing downstream has to do it.
-- `src/lib/vad.ts` is the energy VAD ported from the Python server
-  (`old/souffleur.py`, `VadAccumulator`), constants intact: 20 ms frames, RMS
-  threshold `0.01`, 300 ms minimum speech, 600 ms of silence to end a segment (the
-  class default was 800, but the server ran with `--min-silence-ms 600`), and a
-  15 s cap. The cap is not a preference: without it someone talking continuously
-  produces no transcript until they pause, and the segment would outrun Whisper's
-  30 s window. `FrameSplitter` is the `residue` loop from the WebSocket handler -
-  worklet blocks are 128 samples and never align with a 320-sample frame.
-- A single RMS threshold false-triggers on music, HVAC and keyboards. Silero via
-  ONNX would fix that and keeps the same feed/flush contract, but it means a second
-  ONNX Runtime session on a page whose *first* one already sits behind the poisoned
-  promise described below, and it competes with Whisper decode for the same cores on
-  exactly the device that has none to spare. Pre-speech padding, dual thresholds and
-  an adaptive noise floor are the cheaper fixes if the fixed threshold misbehaves.
+- `src/lib/micStream.ts` is the `getUserMedia` + `AudioWorklet` capture, with the
+  worklet posting blocks of mono float samples to a callback. Two details are
+  load-bearing: the worklet is published as a **blob URL** rather than a bundled
+  asset, which sidesteps `base: '/souffleur/'` entirely, and the worklet is
+  connected through a zero-gain node to `destination`, because a graph that reaches
+  no destination is never pulled. The `AudioContext` is fixed at 16 kHz so
+  resampling happens in the graph and nothing downstream has to do it.
+- `src/lib/vad.ts` is the energy VAD: 20 ms frames, 300 ms minimum speech, 600 ms
+  of silence to end a segment, and a 15 s cap. The cap is not a preference:
+  without it someone talking continuously produces no transcript until they pause,
+  and the segment would outrun Whisper's 30 s window. `FrameSplitter` regroups
+  what arrives into whole frames - worklet blocks are 128 samples and never align
+  with a 320-sample frame.
+- **A single fixed energy threshold is not enough.** Three additions, all still
+  inside the energy envelope:
+  - *Adaptive floor.* The threshold is a multiple of a measured noise floor,
+    because microphone gain is not absolute and a fixed level fails in both
+    directions, totally rather than gradually: too low and every frame reads as
+    speech, so Whisper gets 15 s of room noise and hallucinates ("Thank you.",
+    "Subtitles by ...") into the transcript and from there into the solve prompt;
+    too high and nothing ever crosses, which looks like a broken feature.
+  - *Hysteresis.* Opening a segment takes 3x the floor, keeping one open 2x, so a
+    keyboard click does not start a segment and a sentence trailing off does not
+    end one early.
+  - *Pre-speech padding.* 240 ms held in a ring and prepended on speech start.
+    Word onsets are quiet, and a segment that begins at the crossing begins inside
+    its first word; Whisper's failure there is to guess a plausible word, which
+    reads as fluent text that is wrong. Free at inference time, since Whisper pads
+    to 30 s regardless. The ring **must** be cleared on emit - trailing silence is
+    already inside the emitted segment, so a surviving ring repeats audio, and the
+    symptom is a word appearing at the end of one line and the start of the next.
+- **The floor tracks quiet fast and loud slowly, and that asymmetry is the whole
+  point.** A rolling minimum was tried first and is wrong: with no pause inside the
+  window the minimum climbs into the speaker's own voice and the VAD goes deaf
+  mid-sentence, silently. Falling at `FLOOR_FALL` measures a room almost at once
+  and lets every gap between words drag the estimate back down; rising at
+  `FLOOR_RISE` learns a fan in about five seconds while no plausible unbroken
+  utterance lifts the floor to its own level.
 - Segments are decoded **one at a time** - the pipeline is not reentrant - and the
   queue drops its oldest entry past `MAX_PENDING`, so a device that cannot keep up
   loses an utterance instead of drifting further behind on every one after it. The
@@ -260,13 +276,24 @@ pnpm build
 - `pnpm preview`
 - `pnpm build-only`
 - `pnpm type-check`
+- `pnpm check:vad`
 - `pnpm lint`
 - `pnpm lint:fix`
 
-There is no test suite and no test runner. Verify changes with `lint`, `type-check`,
-`build`, and by driving the app in a browser. CI runs `install --frozen-lockfile`,
-`lint`, then `build` - matching that sequence locally is the closest thing to a
-pre-flight check.
+There is no test suite and no test runner, with one exception: `pnpm check:vad`
+runs `scripts/vad-check.mts` against `src/lib/vad.ts`. It is plain Node with no
+dependency and no build step - Node strips the types and runs the file, which is
+why it can import a `.ts` source directly - and it is not the seed of a test
+framework. The VAD earns it by being the one piece here that is pure,
+deterministic, and impossible to eyeball, since its input is a room and its
+output is an audio segment. The first seven cases cover the segmentation state
+machine; the rest cover the adaptive floor, the hysteresis and the padding. Two
+of them were written after catching real bugs, so if you change `vad.ts`, run it.
+
+Everything else is verified with `lint`, `type-check`, `build`, and by driving the
+app in a browser. CI runs `install --frozen-lockfile`, `lint`, `check:vad`, then
+`build` - matching that sequence locally is the closest thing to a pre-flight
+check.
 
 ## 💥 Gotchas
 
@@ -316,5 +343,8 @@ brings `openai` the same way. None of the five has an install script.
 
 `.github/workflows/souffleur.yml` builds and deploys to Pages on push to `main`. It
 does **not** pin a pnpm version - `pnpm/action-setup` reads `packageManager` from
-`package.json`, so bump that field rather than the workflow. `codeql.yml` scans
+`package.json`, so bump that field rather than the workflow. Its `node-version: 22`
+resolves to the newest 22.x, which matters for `check:vad`: that script is run
+straight from TypeScript, and Node only strips types without a flag from 22.18
+onwards. Pinning a specific older 22.x would break that step and nothing else. `codeql.yml` scans
 `actions,javascript-typescript`.

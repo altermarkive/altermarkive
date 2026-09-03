@@ -1,9 +1,8 @@
 /**
  * lib/vad.ts
  *
- * Energy-envelope Voice Activity Detection, ported from the accumulator the
- * Python server used (`old/souffleur.py`, `VadAccumulator`) before this app
- * moved into the browser. Same feed/flush contract, same constants.
+ * Energy-envelope Voice Activity Detection: it takes frames of audio, decides
+ * which of them carry speech, and hands back one utterance at a time.
  *
  * A frame is a small fixed-size slice of samples - the unit the VAD looks at
  * one at a time rather than all at once. At 16 kHz, 20 ms is 320 samples, and
@@ -14,20 +13,65 @@
  * 10 ms the energy estimate gets noisy; at 40 ms fast transitions start to slip
  * through.
  *
- * In noisier rooms (music, HVAC, a keyboard) the single RMS threshold
- * false-triggers and hands non-speech to Whisper. A drop-in replacement using
- * Silero VAD keeps this same contract - it would need the window fixed at 512
- * samples, which is what Silero wants at 16 kHz, and the RMS comparison
- * replaced by model inference. That trade is deliberately not taken here: it
- * means a second ONNX Runtime session on a page where Transformers.js already
- * chains every session onto one promise that a single rejection poisons.
+ * Three things keep a plain energy test usable, all of them still inside the
+ * energy envelope rather than reaching for a model: an adaptive noise floor, so
+ * the threshold is relative to the room instead of absolute; hysteresis, so
+ * opening a segment is harder than keeping one open; and pre-speech padding, so
+ * a segment does not begin midway through its first word. Each is commented at
+ * the point it happens.
+ *
+ * The remaining weakness is inherent to measuring energy: RMS cannot tell speech
+ * from any other sound at the same level, so a slammed door in a quiet room
+ * still reaches Whisper. Telling them apart needs a model, and that is a trade
+ * this page cannot make cheaply - it would mean a second ONNX Runtime session
+ * where Transformers.js already chains every session onto one promise that a
+ * single rejection poisons, competing for the same cores as Whisper decode on
+ * exactly the device that has none to spare.
  */
 
 export const SAMPLE_RATE = 16_000
 
 const FRAME_MS = 20
-const ENERGY_THRESHOLD = 0.01
 const MIN_SPEECH_MS = 300
+
+/**
+ * The threshold is a multiple of the measured noise floor rather than the
+ * original fixed `0.01`, because nothing about a browser microphone is
+ * absolute: gain varies by device, by OS input setting, and by how far away the
+ * speaker is sitting. A fixed level fails in both directions and both failures
+ * are total rather than gradual. Too low for the room and every frame reads as
+ * speech, so segments only ever end at the cap and Whisper is handed 15 s of
+ * noise - which it does not return empty for, it hallucinates ("Thank you.",
+ * "Subtitles by ...") straight into the transcript, and from there into the
+ * solve prompt. Too high and nothing ever crosses, which looks exactly like a
+ * broken feature.
+ *
+ * Opening a segment takes more than keeping one open. The gap stops a keyboard
+ * click or a chair scrape from starting a segment, while letting a sentence
+ * that trails off stay in one.
+ */
+const OPEN_MULTIPLE = 3
+const CLOSE_MULTIPLE = 2
+
+// A silent room would otherwise drive the floor, and with it the threshold,
+// toward zero, at which point the VAD triggers on numerical dust.
+const MIN_NOISE_FLOOR = 0.003
+
+/**
+ * The floor follows quiet quickly and loud slowly, which is what keeps a
+ * speaker from being measured as their own noise. A rolling minimum was tried
+ * first and is wrong: with no pause inside the window the minimum climbs into
+ * the voice, the threshold follows it, and the VAD goes deaf in the middle of
+ * the sentence it is listening to - silently, since a transcript that stops has
+ * no way of saying why.
+ *
+ * Falling fast means a quiet room is measured almost immediately, and every
+ * gap between words drags the estimate back down. Rising slowly means a fan
+ * switching on is learned over about ten seconds, while no plausible unbroken
+ * utterance lasts long enough to lift the floor to its own level.
+ */
+const FLOOR_FALL = 0.25
+const FLOOR_RISE = 0.002
 
 // The class default was 800 ms, but the server ran with `--min-silence-ms 600`,
 // which is the value that actually saw use.
@@ -38,9 +82,20 @@ const MIN_SILENCE_MS = 600
 // past the 30 s window Whisper is trained on.
 const MAX_SPEECH_MS = 15_000
 
+/**
+ * Audio kept from before the threshold was crossed. Word onsets are the quiet
+ * part - a plosive is silent until its burst, a fricative ramps up - so a
+ * segment that starts at the crossing starts a little way into its first word,
+ * and Whisper does not degrade gracefully there: it guesses a plausible word,
+ * which reads as fluent text that happens to be wrong. In an exam the first
+ * word is disproportionately the one that matters, since it is often the
+ * question word. This costs nothing at inference time, since Whisper pads every
+ * input to 30 s regardless.
+ */
+const PAD_MS = 240
+
 export interface VadOptions {
   frameMs?: number
-  energyThreshold?: number
   minSilenceMs?: number
   minSpeechMs?: number
   maxSpeechMs?: number
@@ -52,7 +107,7 @@ export class VadAccumulator {
   readonly #minSilenceFrames: number
   readonly #minSpeechFrames: number
   readonly #maxSpeechSamples: number
-  readonly #energyThreshold: number
+  readonly #padFrames: number
 
   #buffer: Float32Array[] = []
   #buffered = 0
@@ -60,9 +115,18 @@ export class VadAccumulator {
   #silenceFrames = 0
   #inSpeech = false
 
+  // Frames seen but not yet part of a segment, kept so that a segment can begin
+  // slightly before the threshold was crossed. Cleared whenever a segment is
+  // emitted: the frames of trailing silence are already inside that segment, so
+  // padding the next one with them would repeat audio, and the symptom would be
+  // a word appearing at the end of one transcript line and the start of the next.
+  #pad: Float32Array[] = []
+
+  #floor = MIN_NOISE_FLOOR
+  #lastEnergy = 0
+
   constructor ({
     frameMs = FRAME_MS,
-    energyThreshold = ENERGY_THRESHOLD,
     minSilenceMs = MIN_SILENCE_MS,
     minSpeechMs = MIN_SPEECH_MS,
     maxSpeechMs = MAX_SPEECH_MS,
@@ -71,7 +135,20 @@ export class VadAccumulator {
     this.#minSilenceFrames = Math.trunc(minSilenceMs / frameMs)
     this.#minSpeechFrames = Math.trunc(minSpeechMs / frameMs)
     this.#maxSpeechSamples = Math.trunc(maxSpeechMs / 1000 * SAMPLE_RATE)
-    this.#energyThreshold = energyThreshold
+    this.#padFrames = Math.trunc(PAD_MS / frameMs)
+  }
+
+  /**
+   * The level a frame currently has to reach, and the level of the last one.
+   * Read only for display: an adaptive threshold is invisible in the transcript,
+   * so without somewhere to see it, tuning it is guesswork.
+   */
+  get threshold (): number {
+    return this.#floor * (this.#inSpeech ? CLOSE_MULTIPLE : OPEN_MULTIPLE)
+  }
+
+  get energy (): number {
+    return this.#lastEnergy
   }
 
   /**
@@ -79,11 +156,26 @@ export class VadAccumulator {
    * either a pause long enough to be an utterance boundary, or the cap.
    */
   feed (frame: Float32Array): Float32Array | undefined {
-    if (rms(frame) >= this.#energyThreshold) {
+    const energy = rms(frame)
+    // Measured before the frame is classified, so the floor tracks the room
+    // rather than the decision made about it.
+    this.#observe(energy)
+
+    if (energy >= this.threshold) {
+      if (!this.#inSpeech) {
+        // Opening a segment: everything held back comes with it, so the
+        // recording starts before the first word rather than inside it.
+        for (const held of this.#pad) {
+          this.#append(held)
+        }
+        this.#pad = []
+        this.#inSpeech = true
+      }
       this.#append(frame)
+      // Padding must not count here, or the minimum-speech gate is satisfied by
+      // silence and short noises start producing segments.
       this.#speechFrames += 1
       this.#silenceFrames = 0
-      this.#inSpeech = true
       if (this.#buffered >= this.#maxSpeechSamples) {
         return this.flush()
       }
@@ -95,6 +187,8 @@ export class VadAccumulator {
       if (this.#silenceFrames >= this.#minSilenceFrames) {
         return this.flush()
       }
+    } else {
+      this.#hold(frame)
     }
     return undefined
   }
@@ -109,12 +203,29 @@ export class VadAccumulator {
     this.#speechFrames = 0
     this.#silenceFrames = 0
     this.#inSpeech = false
+    this.#pad = []
     return segment
   }
 
   #append (frame: Float32Array) {
     this.#buffer.push(frame)
     this.#buffered += frame.length
+  }
+
+  #hold (frame: Float32Array) {
+    this.#pad.push(frame)
+    if (this.#pad.length > this.#padFrames) {
+      this.#pad.shift()
+    }
+  }
+
+  #observe (energy: number) {
+    this.#lastEnergy = energy
+    const rate = energy < this.#floor ? FLOOR_FALL : FLOOR_RISE
+    this.#floor = Math.max(
+      this.#floor + (energy - this.#floor) * rate,
+      MIN_NOISE_FLOOR,
+    )
   }
 }
 
