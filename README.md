@@ -139,6 +139,20 @@ Both local paths share `src/lib/whisper.ts` for loading. Notes that matter:
   `webgpuUsable()` therefore asks the *runtime* which build it loaded rather than
   sniffing the user agent, which means it re-enables itself if upstream ever
   lifts the carve-out.
+- **That check alone is not enough, because it depends on a fetch that a bundler
+  removes.** Transformers.js only sets those CDN `wasmPaths` when they are still
+  unset, and a bundled `onnxruntime-web/webgpu` resolves its own wasm assets -
+  the build emits `ort-wasm-simd-threaded.asyncify-*.wasm` - leaving nothing for
+  the `IS_SAFARI` branch to override. Safari then loads the asyncify build and
+  fails one step later, inside graph optimisation:
+  `Can't create a session. ERROR_CODE: 1, qdq_actions.cc TransposeDQWeightsForMatMulNBits
+  Missing required scale` - `MatMulNBits` being the 4-bit decoder its build
+  cannot prepare. Observed on iPadOS 26 Safari. So `webgpuUsable()` also
+  excludes Safari outright, by the same vendor/user-agent test Transformers.js
+  uses (copied, because the package re-exports `env` but not `apis`). iPad
+  therefore runs on WASM: base.en for a file, tiny.en live.
+- A failed load is re-thrown naming the model and device, because the runtime's
+  own message names a graph node rather than the choice that has to change.
 - **That has to be checked before the first session, not caught around it.**
   Transformers.js chains every session creation onto one module-level promise
   with no `.catch` (`backends/onnx.js`, `webInitChain`). One rejection poisons

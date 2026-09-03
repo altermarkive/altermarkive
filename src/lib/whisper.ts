@@ -46,19 +46,34 @@ export interface Transcriber {
 
 type TransformersEnv = typeof TransformersEnvValue
 
+function isSafari (): boolean {
+  const agent = navigator.userAgent
+  return (navigator.vendor ?? '').includes('Apple')
+    && !/CriOS|EdgiOS|FxiOS|OPiOS|brave|mercury/i.test(agent)
+    && !agent.includes('Chrome')
+    && !agent.includes('Android')
+}
+
 /**
  * `navigator.gpu` is a browser capability, not an ONNX Runtime one, and the gap
- * between the two is a trap. The WebGPU execution provider is compiled only
- * into the `asyncify` and `jspi` runtime builds, and Transformers.js
- * deliberately points Safari at the plain build to dodge an Asyncify memory
- * leak on Apple devices - so on iPad Safari `navigator.gpu` exists but session
- * creation throws `webgpuInit is not a function`.
+ * between the two is a trap.
  *
- * Asking the runtime which build it loaded, rather than sniffing the user
- * agent, means this re-enables itself if upstream ever lifts the carve-out.
+ * Two things go wrong on Apple devices, and they are separate. The WebGPU
+ * execution provider is compiled only into the `asyncify` and `jspi` runtime
+ * builds, so where Transformers.js steers Safari at the plain build - to dodge
+ * an Asyncify memory leak - session creation throws `webgpuInit is not a
+ * function`. And where it does not steer, because a bundler resolved the
+ * runtime's wasm assets and left `wasmPaths` unset, Safari loads the asyncify
+ * build and gets *further*: it fails inside graph optimisation instead, with
+ * `TransposeDQWeightsForMatMulNBits Missing required scale` - the 4-bit decoder
+ * its build cannot prepare. Observed on iPadOS 26 Safari.
+ *
+ * So the runtime build is asked first, which is the check that re-enables
+ * itself if upstream lifts its carve-out, and Safari is excluded outright on
+ * top of that, which is the one the bundler cannot defeat.
  */
 function webgpuUsable (env: TransformersEnv): boolean {
-  if (!('gpu' in navigator)) {
+  if (!('gpu' in navigator) || isSafari()) {
     return false
   }
   const paths = env.backends?.onnx?.wasm?.wasmPaths
@@ -109,11 +124,14 @@ async function build (
     },
   }
 
-  const loaded = await pipeline(
-    'automatic-speech-recognition',
-    webgpu ? models.webgpu : models.wasm,
-    options,
-  )
+  const model = webgpu ? models.webgpu : models.wasm
+  let loaded
+  try {
+    loaded = await pipeline('automatic-speech-recognition', model, options)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`${model} on ${options.device} failed to load: ${detail}`, { cause: error })
+  }
   return { pipeline: loaded as AutomaticSpeechRecognitionPipeline, webgpu }
 }
 
