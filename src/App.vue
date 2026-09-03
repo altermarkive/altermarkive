@@ -35,7 +35,7 @@
           <v-btn class="ml-auto" icon="mdi-cog" variant="text" @click="dialog = true" />
         </div>
 
-        <div class="text-xs truncate controls" :title="status">{{ status }}</div>
+        <div class="text-xs status controls" :title="status">{{ status }}</div>
 
         <v-tabs v-model="tab" class="controls">
           <v-tab text="Answer" value="answer" />
@@ -229,7 +229,6 @@
 
 .content {
   flex: 1 1 0;
-  /* Without this a flex child refuses to shrink below its content height. */
   min-height: 0;
 }
 
@@ -238,7 +237,16 @@
   height: 100%;
 }
 
-/* The underline slides between tabs by default; switching should feel instant. */
+/* Two lines, then an ellipsis. */
+.status {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  height: 2.5rem;
+}
+
 :deep(.v-tabs-slider),
 :deep(.v-tab__slider) {
   transition: none !important;

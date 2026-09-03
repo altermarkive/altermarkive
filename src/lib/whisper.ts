@@ -26,18 +26,17 @@ export interface Progress {
  * cross-origin isolation headers that would unlock threads), so it gets the
  * smaller model of each pair.
  *
- * The encoder is where a Whisper model's accuracy lives, so it stays `fp32` on
- * both. The decoder is quantised, but not identically: `q4` is what Hugging
- * Face's own WebGPU Whisper demos ship, while `q8` is the WASM default and does
- * not hit the WebGPU-specific breakage that makes `q8` produce gibberish there.
+ * The encoder is where a Whisper model's accuracy lives, so it stays `fp32`.
+ * The decoder is `q4` on both devices - which is what Hugging Face's own WebGPU
+ * Whisper demos ship, and, less obviously, the only quantisation the current
+ * runtime will load at all. See the note on `q8` in the README.
  */
 export interface WhisperChoice {
   webgpu: string
   wasm: string
 }
 
-const WEBGPU_DTYPE = { encoder_model: 'fp32', decoder_model_merged: 'q4' } as const
-const WASM_DTYPE = { encoder_model: 'fp32', decoder_model_merged: 'q8' } as const
+const DTYPE = { encoder_model: 'fp32', decoder_model_merged: 'q4' } as const
 
 export interface Transcriber {
   pipeline: AutomaticSpeechRecognitionPipeline
@@ -46,34 +45,19 @@ export interface Transcriber {
 
 type TransformersEnv = typeof TransformersEnvValue
 
-function isSafari (): boolean {
-  const agent = navigator.userAgent
-  return (navigator.vendor ?? '').includes('Apple')
-    && !/CriOS|EdgiOS|FxiOS|OPiOS|brave|mercury/i.test(agent)
-    && !agent.includes('Chrome')
-    && !agent.includes('Android')
-}
-
 /**
  * `navigator.gpu` is a browser capability, not an ONNX Runtime one, and the gap
- * between the two is a trap.
+ * between the two is a trap. The WebGPU execution provider is compiled only
+ * into the `asyncify` and `jspi` runtime builds, and Transformers.js
+ * deliberately points Safari at the plain build to dodge an Asyncify memory
+ * leak on Apple devices - so on iPad Safari `navigator.gpu` exists but session
+ * creation throws `webgpuInit is not a function`.
  *
- * Two things go wrong on Apple devices, and they are separate. The WebGPU
- * execution provider is compiled only into the `asyncify` and `jspi` runtime
- * builds, so where Transformers.js steers Safari at the plain build - to dodge
- * an Asyncify memory leak - session creation throws `webgpuInit is not a
- * function`. And where it does not steer, because a bundler resolved the
- * runtime's wasm assets and left `wasmPaths` unset, Safari loads the asyncify
- * build and gets *further*: it fails inside graph optimisation instead, with
- * `TransposeDQWeightsForMatMulNBits Missing required scale` - the 4-bit decoder
- * its build cannot prepare. Observed on iPadOS 26 Safari.
- *
- * So the runtime build is asked first, which is the check that re-enables
- * itself if upstream lifts its carve-out, and Safari is excluded outright on
- * top of that, which is the one the bundler cannot defeat.
+ * Asking the runtime which build it loaded, rather than sniffing the user
+ * agent, means this re-enables itself if upstream ever lifts the carve-out.
  */
 function webgpuUsable (env: TransformersEnv): boolean {
-  if (!('gpu' in navigator) || isSafari()) {
+  if (!('gpu' in navigator)) {
     return false
   }
   const paths = env.backends?.onnx?.wasm?.wasmPaths
@@ -113,7 +97,7 @@ async function build (
   const webgpu = webgpuUsable(env)
   const options = {
     device: webgpu ? 'webgpu' as const : 'wasm' as const,
-    dtype: webgpu ? WEBGPU_DTYPE : WASM_DTYPE,
+    dtype: DTYPE,
     progress_callback: (event: { status: string, progress?: number, file?: string }) => {
       if (event.status === 'progress' && event.progress !== undefined) {
         onProgress({

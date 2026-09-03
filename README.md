@@ -126,10 +126,19 @@ Both local paths share `src/lib/whisper.ts` for loading. Notes that matter:
   so none needs a language token, and all are plain Whisper, so all want the 30 s
   window rather than distil-whisper's longer one.
 - Every variant uses an `fp32` encoder (353 MB for small, 82 MB for base), because
-  the encoder is where a Whisper model's accuracy lives. The decoder is quantised,
-  but not identically: `q4` on WebGPU, which is what Hugging Face's own WebGPU
-  Whisper demos ship, and `q8` on WASM, which is the WASM default and avoids the
-  WebGPU-specific breakage that makes `q8` produce gibberish there.
+  the encoder is where a Whisper model's accuracy lives, and a `q4` decoder on
+  **both** devices - the pairing Hugging Face's own WebGPU Whisper demos use.
+- **Do not "fix" the WASM decoder to `q8`.** It is the documented WASM default and
+  it does not load: `onnxruntime-web` 1.25, which Transformers.js 4.x pulls in,
+  rewrites int8 QDQ weights into `MatMulNBits`, and the Whisper exports on the Hub
+  predate that and carry no scale tensors for it. Session creation fails with
+  `ERROR_CODE: 1, qdq_actions.cc:137 TransposeDQWeightsForMatMulNBits Missing
+  required scale`, on every browser, WASM only
+  ([transformers.js#1707](https://github.com/huggingface/transformers.js/issues/1707),
+  [onnxruntime#28306](https://github.com/microsoft/onnxruntime/issues/28306)).
+  The name says 4-bit, which reads like a WebGPU-only problem and is not: the
+  optimiser *converts to* `MatMulNBits`, so 8-bit weights reach it too. `fp32` is
+  the other loadable option, at roughly 4x the download.
 - `navigator.gpu` is a browser capability, not an ONNX Runtime one, and the gap
   between the two is a trap. The WebGPU execution provider is compiled only into
   the `asyncify` and `jspi` runtime builds; Transformers.js deliberately points
@@ -139,18 +148,6 @@ Both local paths share `src/lib/whisper.ts` for loading. Notes that matter:
   `webgpuUsable()` therefore asks the *runtime* which build it loaded rather than
   sniffing the user agent, which means it re-enables itself if upstream ever
   lifts the carve-out.
-- **That check alone is not enough, because it depends on a fetch that a bundler
-  removes.** Transformers.js only sets those CDN `wasmPaths` when they are still
-  unset, and a bundled `onnxruntime-web/webgpu` resolves its own wasm assets -
-  the build emits `ort-wasm-simd-threaded.asyncify-*.wasm` - leaving nothing for
-  the `IS_SAFARI` branch to override. Safari then loads the asyncify build and
-  fails one step later, inside graph optimisation:
-  `Can't create a session. ERROR_CODE: 1, qdq_actions.cc TransposeDQWeightsForMatMulNBits
-  Missing required scale` - `MatMulNBits` being the 4-bit decoder its build
-  cannot prepare. Observed on iPadOS 26 Safari. So `webgpuUsable()` also
-  excludes Safari outright, by the same vendor/user-agent test Transformers.js
-  uses (copied, because the package re-exports `env` but not `apis`). iPad
-  therefore runs on WASM: base.en for a file, tiny.en live.
 - A failed load is re-thrown naming the model and device, because the runtime's
   own message names a graph node rather than the choice that has to change.
 - **That has to be checked before the first session, not caught around it.**
