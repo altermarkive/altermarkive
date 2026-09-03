@@ -1,89 +1,31 @@
 /**
  * lib/transcribeFile.ts
  *
- * Transcription using Whisper through Transformers.js.
- *
- * The model weights come from the Hugging Face CDN at runtime, not from this
- * site, and Transformers.js caches them in the browser after the first run.
+ * Transcription of an uploaded recording, using Whisper through
+ * Transformers.js. Offline and one-shot: the whole file is decoded, then handed
+ * to the pipeline in one call, which is what lets this path afford the larger
+ * of the two models.
  */
 
-import type {
-  AutomaticSpeechRecognitionPipeline,
-  pipeline as Pipeline,
-  env as TransformersEnvValue,
-} from '@huggingface/transformers'
 import { decodeToMono16k } from '@/lib/audio'
+import { loadTranscriber, type Progress, type WhisperChoice } from '@/lib/whisper'
 
-const WEBGPU_MODEL = 'onnx-community/whisper-small.en'
-const WASM_MODEL = 'onnx-community/whisper-base.en'
-
-const DTYPE = { encoder_model: 'fp32', decoder_model_merged: 'q4' } as const
+const MODELS: WhisperChoice = {
+  webgpu: 'onnx-community/whisper-small.en',
+  wasm: 'onnx-community/whisper-base.en',
+}
 
 // Plain Whisper is trained on a 30 s window, and the
 // stride is the usual chunk/6 of overlap on each side.
 const CHUNK_LENGTH_S = 30
 const STRIDE_LENGTH_S = 5
 
-export interface Progress {
-  // -1 when the work is indeterminate.
-  ratio: number
-  detail: string
-}
+export type { Progress } from '@/lib/whisper'
 
 interface Chunk { text?: string }
 
-type TransformersEnv = typeof TransformersEnvValue
-
 export function isFileTranscriptionSupported (): boolean {
   return typeof AudioContext !== 'undefined'
-}
-
-function webgpuUsable (env: TransformersEnv): boolean {
-  if (!('gpu' in navigator)) {
-    return false
-  }
-  const paths = env.backends?.onnx?.wasm?.wasmPaths
-  if (typeof paths !== 'object' || typeof paths.mjs !== 'string') {
-    return true
-  }
-  return paths.mjs.includes('asyncify') || paths.mjs.includes('jspi')
-}
-
-async function loadTranscriber (
-  pipeline: typeof Pipeline,
-  env: TransformersEnv,
-  onProgress: (progress: Progress) => void,
-): Promise<[AutomaticSpeechRecognitionPipeline, boolean]> {
-  const options = {
-    dtype: DTYPE,
-    progress_callback: (event: { status: string, progress?: number, file?: string }) => {
-      if (event.status === 'progress' && event.progress !== undefined) {
-        onProgress({
-          ratio: event.progress / 100,
-          detail: `Downloading model: ${event.file ?? ''}`,
-        })
-      }
-    },
-  }
-
-  if (webgpuUsable(env)) {
-    try {
-      const transcriber = await pipeline('automatic-speech-recognition', WEBGPU_MODEL, {
-        ...options,
-        device: 'webgpu',
-      })
-      return [transcriber as AutomaticSpeechRecognitionPipeline, true]
-    } catch (error) {
-      console.warn('WebGPU unavailable to the ONNX runtime, falling back to CPU', error)
-      onProgress({ ratio: -1, detail: 'GPU unavailable, retrying on CPU...' })
-    }
-  }
-
-  const transcriber = await pipeline('automatic-speech-recognition', WASM_MODEL, {
-    ...options,
-    device: 'wasm',
-  })
-  return [transcriber as AutomaticSpeechRecognitionPipeline, false]
 }
 
 export async function transcribeFile (
@@ -93,8 +35,7 @@ export async function transcribeFile (
   onProgress({ ratio: -1, detail: 'Decoding audio...' })
   const audio = await decodeToMono16k(file)
 
-  const { env, pipeline } = await import('@huggingface/transformers')
-  const [transcriber, webgpu] = await loadTranscriber(pipeline, env, onProgress)
+  const { pipeline, webgpu } = await loadTranscriber(MODELS, onProgress)
 
   const minutes = Math.max(1, Math.round(audio.length / 16_000 / 60))
   onProgress({
@@ -102,7 +43,7 @@ export async function transcribeFile (
     detail: `Transcribing ${minutes} min on ${webgpu ? 'GPU' : 'CPU'}...`,
   })
 
-  const output = await transcriber(audio, {
+  const output = await pipeline(audio, {
     chunk_length_s: CHUNK_LENGTH_S,
     stride_length_s: STRIDE_LENGTH_S,
     return_timestamps: true,

@@ -73,7 +73,8 @@
 </template>
 
 <script lang="ts" setup>
-  import { ref, watch } from 'vue'
+  import type { RecordingPath } from '@/lib/recording'
+  import { computed, ref, watch } from 'vue'
   import AnswerPane from '@/components/AnswerPane.vue'
   import CameraPreview from '@/components/CameraPreview.vue'
   import SettingsDialog from '@/components/SettingsDialog.vue'
@@ -81,6 +82,7 @@
   import { useCamera } from '@/composables/useCamera'
   import { useRecognition } from '@/composables/useRecognition'
   import { useTranscript } from '@/composables/useTranscript'
+  import { useUniversalRecognition } from '@/composables/useUniversalRecognition'
   import { loadSettings } from '@/lib/settings'
   import { type Answer, createModel, solve } from '@/lib/solver'
 
@@ -95,7 +97,12 @@
 
   const { cameras, selected, video, listCameras, startCamera, capture } = useCamera()
   const { text, addLine, setText, download } = useTranscript()
-  const { error, start, stop } = useRecognition(addLine)
+  const speech = useRecognition(addLine)
+  const universal = useUniversalRecognition(addLine)
+
+  // One message for the pane, whichever path produced it. Only one path runs at
+  // a time, so at most one of these is ever non-empty.
+  const error = computed(() => universal.error.value || speech.error.value)
 
   watch(error, message_ => {
     if (message_) {
@@ -103,7 +110,21 @@
     }
   })
 
-  async function onRecord () {
+  // Loading and download progress from the local model, which the status line
+  // is the only place to show once the dialog has closed.
+  watch(() => universal.progress.value.detail, detail => {
+    if (detail) {
+      status.value = detail
+    }
+  })
+
+  // Two paths, one microphone: starting either has to shut the other down.
+  async function stop () {
+    speech.stop()
+    await universal.stop()
+  }
+
+  async function onRecord (path: RecordingPath) {
     // Camera first: iOS Safari ties getUserMedia to the user gesture, and the
     // speech-recognition prompt can consume it.
     let cameraError = ''
@@ -119,8 +140,16 @@
       await listCameras()
     } catch { /* enumeration is best-effort */ }
 
-    start()
-    status.value = cameraError || 'Listening.'
+    await stop()
+    if (path === 'universal') {
+      await universal.start()
+      status.value = cameraError
+        || universal.error.value
+        || 'Listening; transcribing on this device.'
+    } else {
+      speech.start()
+      status.value = cameraError || 'Listening.'
+    }
   }
 
   async function onCameraMenu (open: boolean) {
@@ -129,8 +158,8 @@
     }
   }
 
-  function onTranscribed (transcribed: string[], name: string) {
-    stop()
+  async function onTranscribed (transcribed: string[], name: string) {
+    await stop()
     setText(transcribed.join('\n'))
     tab.value = 'transcript'
     dialog.value = false
